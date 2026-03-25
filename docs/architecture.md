@@ -20,7 +20,7 @@ The integrated AI layer uses a **LangGraph, LangChain, and Groq** stack to deliv
 
 ## 2. High-Level Architecture
 
-The system is designed around a service-oriented monolithic architecture. A central FastAPI application exposes the API and orchestrates calls to internal business logic services, the AI layer, and the database.
+The system employs a service-driven, monolithic design in which a shared FastAPI Application provides an API and connects the internal business logic services, the AI service, and database as needed through API Calls.
 
 ```mermaid
 graph TD
