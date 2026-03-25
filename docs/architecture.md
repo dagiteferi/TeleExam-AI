@@ -102,8 +102,7 @@ teleexam-ai-backend/
 │   ├── schema.sql
 │   ├── api-endpoints.md
 │   ├── coding-standards.md
-│   ├── development-setup.md
-│   └── ai-prompts.md
+│   └── development-setup.md
 │
 ├── .github/
 │   └── workflows/
@@ -115,8 +114,7 @@ teleexam-ai-backend/
 ├── requirements.txt
 ├── Dockerfile
 ├── pyproject.toml                # For black/ruff config
-├── README.md
-└── arch.md                       # Symlink or copy of docs/arch.md
+└── README.md
 ```
 
 ## 4. AI Architecture – LangGraph
