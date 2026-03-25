@@ -43,41 +43,80 @@ The backend repository is organized to separate concerns, promoting maintainabil
 
 ```
 teleexam-ai-backend/
-├── app/                  # Core application source code.
+├── app/                          # Main application package
 │   ├── __init__.py
-│   ├── main.py             # FastAPI application entry point and middleware setup.
-│   ├── middleware/         # Custom FastAPI middleware (e.g., auth, context).
-│   │   └── telegram_context.py
-│   ├── api/                # API endpoint definitions (FastAPI routers).
+│   ├── main.py                   # FastAPI app creation + middleware mounting
+│   ├── core/                     # Core configurations & security
 │   │   ├── __init__.py
+│   │   ├── config.py             # Settings using pydantic-settings
+│   │   ├── security.py           # Secret validation, rate limit config
+│   │   └── middleware.py         # All custom middleware
+│   ├── middleware/               # Telegram-specific middleware
+│   │   ├── __init__.py
+│   │   └── telegram_context.py   # Sets telegram_id + runs SET command for RLS
+│   ├── api/                      # All route definitions (thin controllers)
+│   │   ├── __init__.py
+│   │   ├── deps.py               # Common dependencies (get_current_telegram_id, etc.)
+│   │   ├── user.py
 │   │   ├── exam.py
-│   │   ├── quiz.py
-│   │   ├── ai.py           # Endpoints for AI features (/explain, /chat).
-│   │   ├── results.py
-│   │   └── admin.py
-│   ├── services/           # Business logic and core functionalities.
+│   │   ├── ai.py                 # /api/ai/explain, /api/ai/chat
+│   │   ├── session.py
+│   │   └── results.py
+│   ├── services/                 # Business logic layer
 │   │   ├── __init__.py
 │   │   ├── user_service.py
 │   │   ├── exam_service.py
 │   │   ├── session_service.py
-│   │   ├── ai_service.py   # Core LangGraph agent implementation.
-│   │   ├── referral_service.py
-│   │   └── rate_limit_service.py
-│   ├── models/             # Pydantic models for API requests/responses and ORM models.
-│   ├── db/                 # Database session management and base model definitions.
-│   └── utils/              # Shared, reusable utility functions.
-├── scripts/              # Standalone scripts for administrative tasks.
-│   └── import_exams.py     # Example: Bulk-importing exam data.
-├── data/                 # Raw data files (e.g., JSON) for import scripts.
-├── tests/                # Automated tests (unit, integration).
-├── docs/                 # Project documentation.
-│   └── schema.sql        # Full database schema and RLS policies.
-├── .github/workflows/    # CI/CD pipelines for GitHub Actions.
-├── Dockerfile            # Container definition for deployment.
-├── requirements.txt      # Python package dependencies.
-├── .env.example          # Example environment variables for configuration.
-├── arc.md                # This architecture document.
-└── README.md             # Project overview and setup instructions.
+│   │   ├── ai_service.py         # LangGraph agent (core AI logic)
+│   │   ├── rate_limit_service.py
+│   │   └── referral_service.py
+│   ├── models/                   # Pydantic models (request/response)
+│   │   ├── __init__.py
+│   │   ├── user.py
+│   │   ├── exam.py
+│   │   ├── ai.py
+│   │   └── response.py           # Common response schemas
+│   ├── db/                       # Database related
+│   │   ├── __init__.py
+│   │   └── supabase.py           # Supabase client singleton + helpers
+│   └── utils/                    # Reusable utilities
+│       ├── __init__.py
+│       ├── image_generator.py    # Pillow question image generation
+│       └── helpers.py
+│
+├── scripts/                      # One-time scripts
+│   ├── __init__.py
+│   └── import_exams.py           # JSON → Postgres import (idempotent)
+│
+├── data/                         # Raw input files (git ignored or example only)
+│   └── exams/                    # Put your JSON files here
+│
+├── tests/                        # Tests
+│   ├── __init__.py
+│   ├── unit/
+│   ├── integration/
+│   └── conftest.py
+│
+├── docs/                         # All documentation
+│   ├── arch.md
+│   ├── schema.sql
+│   ├── api-endpoints.md
+│   ├── coding-standards.md
+│   ├── development-setup.md
+│   └── ai-prompts.md
+│
+├── .github/
+│   └── workflows/
+│       ├── deploy-dev.yml
+│       └── deploy-prod.yml
+│
+├── .env.example
+├── .gitignore
+├── requirements.txt
+├── Dockerfile
+├── pyproject.toml                # For black/ruff config
+├── README.md
+└── arch.md                       # Symlink or copy of docs/arch.md
 ```
 
 ## 4. AI Architecture – LangGraph
