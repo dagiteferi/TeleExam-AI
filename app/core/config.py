@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     groq_api_key: str
     environment: str = "development"
     sqlalchemy_database_url: str
+    cors_allow_origins: list[str] = ["*"]
+
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
 
 
 settings = Settings()
