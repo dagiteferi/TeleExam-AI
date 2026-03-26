@@ -1,48 +1,40 @@
 from __future__ import annotations
-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.api.deps import get_current_telegram_id, get_db_conn
-from app.models.ai import ChatRequest, ChatResponse, ExplainRequest, ExplainResponse
+from app.api.deps import CurrentTelegramId, DbConn
+from app.models.ai import ExplainRequest, ExplainResponse, ChatRequest, ChatResponse
+from app.models.ai_study_plan import StudyPlanRequest, StudyPlanResponse
 from app.services.ai_service import AiService
-from app.services.rate_limit_service import RateLimitExceededError, RateLimitService
 
 router = APIRouter(prefix="/ai")
 
-_rate_limiter = RateLimitService()
 
-
-def _enforce_rate_limit(telegram_id: int = Depends(get_current_telegram_id)) -> int:
-    try:
-        _rate_limiter.check(telegram_id)
-        return telegram_id
-    except RateLimitExceededError as e:
-        raise HTTPException(
-            status_code=429,
-            detail="Rate limit exceeded",
-            headers={"Retry-After": str(e.retry_after_seconds)},
-        ) from e
-
-
-@router.post("/explain", response_model=ExplainResponse, dependencies=[Depends(_enforce_rate_limit)])
-async def explain(
-    payload: ExplainRequest,
-    conn: AsyncConnection = Depends(get_db_conn),
+@router.post("/explain", response_model=ExplainResponse)
+async def explain_question(
+    request: ExplainRequest,
+    _current_telegram_id: int = CurrentTelegramId,
+    conn: AsyncConnection = DbConn,
 ) -> ExplainResponse:
-    try:
-        data = await AiService().explain(
-            conn,
-            question_id=payload.question_id,
-            user_answer=payload.user_answer,
-        )
-        return ExplainResponse(**data)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    # We pass connection and details directly
+    return await AiService().explain_question(
+        conn, request.telegram_id, request.question_id, request.user_answer
+    )
 
 
-@router.post("/chat", response_model=ChatResponse, dependencies=[Depends(_enforce_rate_limit)])
-async def chat(payload: ChatRequest) -> ChatResponse:
-    data = await AiService().chat(message=payload.message)
-    return ChatResponse(**data)
+@router.post("/chat", response_model=ChatResponse)
+async def chat_interaction(
+    request: ChatRequest,
+    _current_telegram_id: int = CurrentTelegramId,
+    conn: AsyncConnection = DbConn,
+) -> ChatResponse:
+    return await AiService().chat(conn, request.telegram_id, request.message)
 
+
+@router.post("/study-plan", response_model=StudyPlanResponse)
+async def create_study_plan(
+    request: StudyPlanRequest,
+    _current_telegram_id: int = CurrentTelegramId,
+    conn: AsyncConnection = DbConn,
+) -> StudyPlanResponse:
+    return await AiService().generate_study_plan(conn, request.telegram_id)

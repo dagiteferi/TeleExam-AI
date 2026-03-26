@@ -1,10 +1,9 @@
 from __future__ import annotations
-
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.api.deps import get_current_telegram_id, get_db_conn
-from app.models.exam import AnswerRequest, AnswerResponse, Mode, NextQuestionResponse, StartExamResponse
+from app.api.deps import CurrentTelegramId, DbConn
+from app.models.exam import Mode, StartExamResponse, NextQuestionResponse, AnswerRequest, AnswerResponse
 from app.services.exam_service import ExamService
 
 router = APIRouter(prefix="/exam")
@@ -12,56 +11,37 @@ router = APIRouter(prefix="/exam")
 
 @router.get("/start", response_model=StartExamResponse)
 async def start_exam(
-    mode: Mode = Query(...),
-    course_id: int | None = Query(default=None),
-    topic_id: int | None = Query(default=None),
-    telegram_id: int = Depends(get_current_telegram_id),
-    conn: AsyncConnection = Depends(get_db_conn),
+    mode: Mode,
+    course_id: int | None = None,
+    topic_id: int | None = None,
+    telegram_id: int = CurrentTelegramId,
+    conn: AsyncConnection = DbConn,
 ) -> StartExamResponse:
-    try:
-        data = await ExamService().start_session(
-            conn,
-            telegram_id=telegram_id,
-            mode=mode,
-            course_id=course_id,
-            topic_id=topic_id,
-        )
-        return StartExamResponse(**data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    if mode == "exam" and course_id is None:
+        raise HTTPException(status_code=400, detail="course_id is required for exam mode")
+    if mode in ["practice", "quiz"] and topic_id is None:
+        raise HTTPException(status_code=400, detail="topic_id is required for practice/quiz mode")
+        
+    return await ExamService().start_session(
+        conn, telegram_id, mode, course_id=course_id, topic_id=topic_id
+    )
 
 
 @router.get("/next/{session_id}", response_model=NextQuestionResponse)
 async def get_next_question(
     session_id: str,
-    _: int = Depends(get_current_telegram_id),
-    conn: AsyncConnection = Depends(get_db_conn),
+    telegram_id: int = CurrentTelegramId,
+    conn: AsyncConnection = DbConn,
 ) -> NextQuestionResponse:
-    try:
-        data = await ExamService().next_question(conn, session_id=session_id)
-        return NextQuestionResponse(**data)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    return await ExamService().get_next_question(conn, telegram_id, session_id)
 
 
 @router.post("/answer", response_model=AnswerResponse)
 async def submit_answer(
-    payload: AnswerRequest,
-    _: int = Depends(get_current_telegram_id),
-    conn: AsyncConnection = Depends(get_db_conn),
+    request: AnswerRequest,
+    telegram_id: int = CurrentTelegramId,
+    conn: AsyncConnection = DbConn,
 ) -> AnswerResponse:
-    try:
-        data = await ExamService().submit_answer(
-            conn,
-            session_id=payload.session_id,
-            question_id=payload.question_id,
-            answer=payload.answer,
-        )
-        return AnswerResponse(**data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
+    return await ExamService().submit_answer(
+        conn, telegram_id, request.session_id, request.question_id, request.answer
+    )

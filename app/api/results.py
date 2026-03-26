@@ -1,36 +1,25 @@
 from __future__ import annotations
-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.api.deps import get_current_telegram_id, get_db_conn
-from app.models.results import ResultsSummaryResponse, SessionDetailsResponse
+from app.api.deps import CurrentTelegramId, DbConn
+from app.models.results import OverallResultsResponse, SessionResultResponse
 from app.services.results_service import ResultsService
 
 router = APIRouter(prefix="/results")
 
-
-@router.get("/{telegram_id}", response_model=ResultsSummaryResponse)
-async def results_summary(
+@router.get("/{telegram_id}", response_model=OverallResultsResponse)
+async def get_overall_results(
     telegram_id: int,
-    current_tid: int = Depends(get_current_telegram_id),
-    conn: AsyncConnection = Depends(get_db_conn),
-) -> ResultsSummaryResponse:
-    if telegram_id != current_tid:
-        raise HTTPException(status_code=403, detail="Forbidden")
-    data = await ResultsService().get_summary(conn, telegram_id=telegram_id)
-    return ResultsSummaryResponse(**data)
+    _current_telegram_id: int = CurrentTelegramId,
+    conn: AsyncConnection = DbConn,
+) -> OverallResultsResponse:
+    return await ResultsService().get_overall_results(conn, telegram_id)
 
-
-@router.get("/session/{session_id}", response_model=SessionDetailsResponse)
-async def session_details(
+@router.get("/session/{session_id}", response_model=SessionResultResponse)
+async def get_session_results(
     session_id: str,
-    _: int = Depends(get_current_telegram_id),
-    conn: AsyncConnection = Depends(get_db_conn),
-) -> SessionDetailsResponse:
-    try:
-        data = await ResultsService().get_session_details(conn, session_id=session_id)
-        return SessionDetailsResponse(**data)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
+    telegram_id: int = CurrentTelegramId,
+    conn: AsyncConnection = DbConn,
+) -> SessionResultResponse:
+    return await ResultsService().get_session_results(conn, telegram_id, session_id)
