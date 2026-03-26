@@ -1,47 +1,52 @@
 from __future__ import annotations
-from typing import Any
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.models.ai import ExplainResponse, ChatResponse
+from app.models.ai_study_plan import StudyPlanResponse, StudyPlanDetails, StudyPlanTopic
 
 class AiService:
-    async def explain(
+    async def explain_question(
         self,
         conn: AsyncConnection,
-        *,
+        telegram_id: int,
         question_id: int,
         user_answer: str | None,
-    ) -> dict[str, Any]:
-        result = await conn.execute(
-            text(
-                """
-                select question_text, correct_answer, explanation
-                from questions
-                where id = :qid
-                """
-            ),
-            {"qid": question_id},
+    ) -> ExplainResponse:
+        # Dummy explanation logic
+        return ExplainResponse(
+            success=True,
+            explanation=f"Here is a detailed explanation for question {question_id}.",
+            key_points=["Point 1", "Point 2"],
+            weak_topic_suggestion="Review Algorithm Basics"
         )
-        row = result.mappings().first()
-        if not row:
-            raise LookupError("Question not found")
 
-        correct = str(row["correct_answer"])
-        base = row.get("explanation") or "No stored explanation available yet."
+    async def chat(
+        self,
+        conn: AsyncConnection,
+        telegram_id: int,
+        message: str,
+    ) -> ChatResponse:
+        # Dummy chat logic
+        return ChatResponse(
+            success=True,
+            ai_response="Let's break down your question. What specifically are you struggling with?"
+        )
 
-        if user_answer:
-            prefix = "Your answer is correct." if user_answer.strip().upper() == correct.strip().upper() else "Your answer is incorrect."
-            explanation = f"{prefix} {base}"
-        else:
-            explanation = str(base)
-
-        return {
-            "success": True,
-            "explanation": explanation,
-            "key_points": [],
-            "weak_topic_suggestion": None,
-        }
-
-    async def chat(self, *, message: str) -> dict[str, Any]:
-        return {"success": True, "ai_response": message}
-
+    async def generate_study_plan(
+        self,
+        conn: AsyncConnection,
+        telegram_id: int,
+    ) -> StudyPlanResponse:
+        return StudyPlanResponse(
+            success=True,
+            study_plan=StudyPlanDetails(
+                title="Personalized Study Plan",
+                duration_days=7,
+                topics=[
+                    StudyPlanTopic(
+                        name="Basic AI concepts",
+                        resources=["URL 1", "URL 2"]
+                    )
+                ]
+            )
+        )
