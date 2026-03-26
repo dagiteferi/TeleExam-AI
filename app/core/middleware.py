@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import time
 import uuid
-import structlog # Changed from logging
+import structlog
 from contextvars import ContextVar
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -10,52 +11,42 @@ from starlette.responses import Response, JSONResponse
 from starlette.types import ASGIApp
 
 from app.core.config import settings
+from app.db.redis import get_redis_client, get_rate_limit_key
 
-# Define a ContextVar to store the request_id for structured logging
 request_id_context: ContextVar[str | None] = ContextVar("request_id_context", default=None)
 telegram_id_context: ContextVar[int | None] = ContextVar("telegram_id_context", default=None)
 
-logger = structlog.get_logger(__name__) # Changed to structlog
+logger = structlog.get_logger(__name__)
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    """
-    Middleware to add a unique request ID to each request and response.
-    Also stores the request_id in a ContextVar for structured logging.
-    """
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         request_id = str(uuid.uuid4())
         request.state.request_id = request_id
         
-        # Store request_id in ContextVar
         token = request_id_context.set(request_id)
         
         try:
             response = await call_next(request)
         finally:
-            request_id_context.reset(token) # Reset ContextVar after request
+            request_id_context.reset(token)
             
         response.headers["X-Request-ID"] = request_id
         return response
 
 
 class BotAuthMiddleware(BaseHTTPMiddleware):
-    """
-    Middleware to authenticate requests from the Telegram bot using X-Telegram-Secret.
-    It also extracts X-Telegram-Id and stores it in request.state and a ContextVar.
-    """
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        # Skip authentication for /docs and /openapi.json paths
         if request.url.path in ["/docs", "/openapi.json", "/metrics"]:
             return await call_next(request)
 
         telegram_secret = request.headers.get("X-Telegram-Secret")
         telegram_id_str = request.headers.get("X-Telegram-Id")
 
-        if not telegram_secret or telegram_secret != settings.TELEGRAM_SHARED_SECRET:
+        if not telegram_secret or telegram_secret != settings.telegram_webhook_secret:
             logger.warning("Unauthorized access attempt: Invalid X-Telegram-Secret",
                            path=request.url.path,
                            ip=request.client.host)
@@ -76,7 +67,6 @@ class BotAuthMiddleware(BaseHTTPMiddleware):
         try:
             telegram_id = int(telegram_id_str)
             request.state.telegram_id = telegram_id
-            # Store telegram_id in ContextVar
             token = telegram_id_context.set(telegram_id)
         except ValueError:
             logger.warning("Unauthorized access attempt: Invalid X-Telegram-Id format",
@@ -91,6 +81,47 @@ class BotAuthMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
         finally:
-            telegram_id_context.reset(token) # Reset ContextVar after request
+            telegram_id_context.reset(token)
 
         return response
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        if request.url.path in ["/docs", "/openapi.json", "/metrics"]:
+            return await call_next(request)
+
+        telegram_id = request.state.get("telegram_id")
+        if not telegram_id:
+            return await call_next(request)
+
+        redis = await get_redis_client()
+        current_time = int(time.time())
+        
+        route_identifier = request.url.path 
+        rate_limit_key = get_rate_limit_key(telegram_id, route_identifier)
+
+        await redis.zadd(rate_limit_key, {str(uuid.uuid4()): current_time})
+        
+        window_start = current_time - settings.rate_limit_window_seconds
+        await redis.zremrangebyscore(rate_limit_key, 0, window_start)
+        
+        request_count = await redis.zcard(rate_limit_key)
+
+        if request_count > settings.rate_limit_requests:
+            logger.warning("Rate limit exceeded",
+                           telegram_id=telegram_id,
+                           path=request.url.path,
+                           request_count=request_count,
+                           limit=settings.rate_limit_requests)
+            return JSONResponse(
+                status_code=429,
+                content={"error": {"code": "rate_limited", "message": "Too Many Requests"}},
+                headers={"Retry-After": str(settings.rate_limit_window_seconds)},
+            )
+        
+        await redis.expire(rate_limit_key, settings.rate_limit_window_seconds + 60)
+
+        return await call_next(request)
