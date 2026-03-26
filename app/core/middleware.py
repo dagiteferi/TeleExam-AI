@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-import logging
+import structlog # Changed from logging
+from contextvars import ContextVar
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -10,18 +11,31 @@ from starlette.types import ASGIApp
 
 from app.core.config import settings
 
-logger = logging.getLogger(__name__)
+# Define a ContextVar to store the request_id for structured logging
+request_id_context: ContextVar[str | None] = ContextVar("request_id_context", default=None)
+telegram_id_context: ContextVar[int | None] = ContextVar("telegram_id_context", default=None)
+
+logger = structlog.get_logger(__name__) # Changed to structlog
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
     """
     Middleware to add a unique request ID to each request and response.
+    Also stores the request_id in a ContextVar for structured logging.
     """
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         request_id = str(uuid.uuid4())
         request.state.request_id = request_id
-        response = await call_next(request)
+        
+        # Store request_id in ContextVar
+        token = request_id_context.set(request_id)
+        
+        try:
+            response = await call_next(request)
+        finally:
+            request_id_context.reset(token) # Reset ContextVar after request
+            
         response.headers["X-Request-ID"] = request_id
         return response
 
@@ -29,7 +43,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 class BotAuthMiddleware(BaseHTTPMiddleware):
     """
     Middleware to authenticate requests from the Telegram bot using X-Telegram-Secret.
-    It also extracts X-Telegram-Id and stores it in request.state.
+    It also extracts X-Telegram-Id and stores it in request.state and a ContextVar.
     """
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
@@ -43,7 +57,6 @@ class BotAuthMiddleware(BaseHTTPMiddleware):
 
         if not telegram_secret or telegram_secret != settings.TELEGRAM_SHARED_SECRET:
             logger.warning("Unauthorized access attempt: Invalid X-Telegram-Secret",
-                           request_id=getattr(request.state, "request_id", "N/A"),
                            path=request.url.path,
                            ip=request.client.host)
             return JSONResponse(
@@ -53,7 +66,6 @@ class BotAuthMiddleware(BaseHTTPMiddleware):
 
         if not telegram_id_str:
             logger.warning("Unauthorized access attempt: Missing X-Telegram-Id",
-                           request_id=getattr(request.state, "request_id", "N/A"),
                            path=request.url.path,
                            ip=request.client.host)
             return JSONResponse(
@@ -64,9 +76,10 @@ class BotAuthMiddleware(BaseHTTPMiddleware):
         try:
             telegram_id = int(telegram_id_str)
             request.state.telegram_id = telegram_id
+            # Store telegram_id in ContextVar
+            token = telegram_id_context.set(telegram_id)
         except ValueError:
             logger.warning("Unauthorized access attempt: Invalid X-Telegram-Id format",
-                           request_id=getattr(request.state, "request_id", "N/A"),
                            path=request.url.path,
                            telegram_id_str=telegram_id_str,
                            ip=request.client.host)
@@ -74,5 +87,10 @@ class BotAuthMiddleware(BaseHTTPMiddleware):
                 status_code=403,
                 content={"error": {"code": "unauthorized_bot", "message": "Invalid X-Telegram-Id format"}},
             )
+        
+        try:
+            response = await call_next(request)
+        finally:
+            telegram_id_context.reset(token) # Reset ContextVar after request
 
-        return await call_next(request)
+        return response
