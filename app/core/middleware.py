@@ -1,72 +1,78 @@
 from __future__ import annotations
 
-import json
-from typing import Any
+import uuid
+import logging
 
-import structlog
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.requests import Request
+from starlette.responses import Response, JSONResponse
+from starlette.types import ASGIApp
 
-from app.core.security import validate_telegram_secret
+from app.core.config import settings
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-_SKIP_PATH_PREFIXES = ("/docs", "/openapi.json", "/health", "/api/health")
-
-
-def _extract_telegram_id(request: Request, body_json: dict[str, Any] | None) -> int | None:
-    header_id = request.headers.get("X-Telegram-Id")
-    if header_id:
-        try:
-            return int(header_id)
-        except ValueError:
-            return None
-
-    query_id = request.query_params.get("telegram_id")
-    if query_id:
-        try:
-            return int(query_id)
-        except ValueError:
-            return None
-
-    if body_json and "telegram_id" in body_json:
-        try:
-            return int(body_json["telegram_id"])
-        except (TypeError, ValueError):
-            return None
-
-    return None
-
-
-class TelegramAuthContextMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if request.url.path.startswith(_SKIP_PATH_PREFIXES):
-            return await call_next(request)
-
-        secret = request.headers.get("X-Telegram-Secret")
-        if not validate_telegram_secret(secret):
-            return JSONResponse(status_code=401, content={"success": False, "error": "Unauthorized"})
-
-        body_json: dict[str, Any] | None = None
-        if request.method in {"POST", "PUT", "PATCH"}:
-            try:
-                raw = await request.body()
-                if raw:
-                    body_json = json.loads(raw.decode("utf-8"))
-            except json.JSONDecodeError:
-                return JSONResponse(status_code=400, content={"success": False, "error": "Invalid JSON"})
-
-            async def receive() -> dict[str, Any]:
-                return {"type": "http.request", "body": raw, "more_body": False}
-
-            request._receive = receive  # type: ignore[attr-defined]
-
-        telegram_id = _extract_telegram_id(request, body_json)
-        request.state.telegram_id = telegram_id
-
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to add a unique request ID to each request and response.
+    """
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        request_id = str(uuid.uuid4())
+        request.state.request_id = request_id
         response = await call_next(request)
-        if telegram_id is not None:
-            response.headers["X-Telegram-Id"] = str(telegram_id)
+        response.headers["X-Request-ID"] = request_id
         return response
 
+
+class BotAuthMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to authenticate requests from the Telegram bot using X-Telegram-Secret.
+    It also extracts X-Telegram-Id and stores it in request.state.
+    """
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        # Skip authentication for /docs and /openapi.json paths
+        if request.url.path in ["/docs", "/openapi.json", "/metrics"]:
+            return await call_next(request)
+
+        telegram_secret = request.headers.get("X-Telegram-Secret")
+        telegram_id_str = request.headers.get("X-Telegram-Id")
+
+        if not telegram_secret or telegram_secret != settings.TELEGRAM_SHARED_SECRET:
+            logger.warning("Unauthorized access attempt: Invalid X-Telegram-Secret",
+                           request_id=getattr(request.state, "request_id", "N/A"),
+                           path=request.url.path,
+                           ip=request.client.host)
+            return JSONResponse(
+                status_code=403,
+                content={"error": {"code": "unauthorized_bot", "message": "Invalid X-Telegram-Secret"}},
+            )
+
+        if not telegram_id_str:
+            logger.warning("Unauthorized access attempt: Missing X-Telegram-Id",
+                           request_id=getattr(request.state, "request_id", "N/A"),
+                           path=request.url.path,
+                           ip=request.client.host)
+            return JSONResponse(
+                status_code=403,
+                content={"error": {"code": "unauthorized_bot", "message": "Missing X-Telegram-Id"}},
+            )
+
+        try:
+            telegram_id = int(telegram_id_str)
+            request.state.telegram_id = telegram_id
+        except ValueError:
+            logger.warning("Unauthorized access attempt: Invalid X-Telegram-Id format",
+                           request_id=getattr(request.state, "request_id", "N/A"),
+                           path=request.url.path,
+                           telegram_id_str=telegram_id_str,
+                           ip=request.client.host)
+            return JSONResponse(
+                status_code=403,
+                content={"error": {"code": "unauthorized_bot", "message": "Invalid X-Telegram-Id format"}},
+            )
+
+        return await call_next(request)
