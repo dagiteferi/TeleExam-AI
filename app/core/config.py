@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str
     groq_api_key: str
     environment: str = "development"
+    sqlalchemy_database_url: str
 
 
 settings = Settings()

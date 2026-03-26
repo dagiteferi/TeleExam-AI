@@ -6,3 +6,11 @@ __pycache__/
 *.pyd
 *.db
 .env
+*.log
+/media/
+/uploads/
+.pytest_cache/
+htmlcov/
+.coverage
+.DS_Store
+*.sqlite3
