@@ -5,12 +5,15 @@ from contextlib import asynccontextmanager
 import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+from sqlalchemy.orm import declarative_base
 
 from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
 _engine: AsyncEngine | None = None
+
+Base = declarative_base()
 
 
 def get_engine() -> AsyncEngine:
