@@ -3,8 +3,7 @@ from fastapi import APIRouter
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.api.deps import CurrentTelegramId, DbConn
-from app.models.ai import ExplainRequest, ExplainResponse, ChatRequest, ChatResponse
-from app.models.ai_study_plan import StudyPlanRequest, StudyPlanResponse
+from app.schemas.ai import ExplainRequest, ExplainResponse, ChatRequest, ChatResponse, StudyPlanRequest, StudyPlanResponse
 from app.services.ai_service import AiService
 
 router = APIRouter(prefix="/ai")
@@ -16,7 +15,6 @@ async def explain_question(
     _current_telegram_id: int = CurrentTelegramId,
     conn: AsyncConnection = DbConn,
 ) -> ExplainResponse:
-    # We pass connection and details directly
     return await AiService().explain_question(
         conn, request.telegram_id, request.question_id, request.user_answer
     )

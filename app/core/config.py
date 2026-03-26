@@ -15,20 +15,22 @@ class Settings(BaseSettings):
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
 
-    # Redis settings
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: str | None = None
 
-    # Session settings
-    EXAM_GRACE_PERIOD_SECONDS: int = 600  # 10 minutes
-    DEFAULT_EXAM_TTL_SECONDS: int = 7200  # 2 hours
-    DEFAULT_PRACTICE_TTL_SECONDS: int = 86400  # 24 hours
-    DEFAULT_QUIZ_TTL_SECONDS: int = 1800  # 30 minutes
+    EXAM_GRACE_PERIOD_SECONDS: int = 600
+    DEFAULT_EXAM_TTL_SECONDS: int = 7200
+    DEFAULT_PRACTICE_TTL_SECONDS: int = 86400
+    DEFAULT_QUIZ_TTL_SECONDS: int = 1800
     DEFAULT_QUIZ_QUESTION_COUNT: int = 5
+    DEFAULT_COMPLETED_SESSION_TTL_SECONDS: int = 3600
 
-    # Qtoken settings
-    QTOKEN_TTL_SECONDS: int = 90 # 60-120 seconds recommended
+    QTOKEN_TTL_SECONDS: int = 90
+
+    admin_jwt_secret: str
+    admin_jwt_algorithm: str = "HS256"
+    admin_jwt_ttl_minutes: int = 60
 
 settings = Settings()
