@@ -83,7 +83,7 @@ These rules are **non-negotiable** and **override any optional configuration**. 
   - The backend must **never** return the full `question_ids` list to clients.
   - Session may store minimal IDs internally (Redis only) and/or use deterministic seed-based selection.
 - **AI access control**:
-  - `/api/ai/explain` is **blocked** for exam sessions unless the session is **completed**.
+  - `/api/ai/explain` is **blocked** for exam sessions unless the session is **completed`.
 - **Behavioral anti-bot detection**:
   - Backend tracks timing + request patterns in Redis and applies mitigation:
     - throttle (429), temporary block (403), and admin flagging.
@@ -139,6 +139,10 @@ flowchart LR
 - Quiz: e.g. 30m.
 - Practice: e.g. 24h inactivity TTL.
 - **Auto-expire is mandatory**. Any read/write refreshes TTL (rolling TTL) *except* completed sessions.
+- **Session Expiration Behavior**:
+    - **Exam/Quiz**: If `deadline_ts` is reached, the session is automatically marked `expired`. If the user attempts to `GET /question` or `POST /answer` after `deadline_ts`, the system will return a `409 Conflict` with `session_expired` code, prompting the bot to offer `POST /submit` or start a new session.
+    - **Practice**: If the rolling TTL expires due to inactivity, the session is simply removed. No auto-submit is performed.
+    - **Grace Recovery Window**: For exam/quiz sessions, a `grace_seconds` period (e.g., 10 minutes) is added to the `deadline_ts` to allow for network latency or brief interruptions for final submission. During this window, only `POST /submit` is allowed; `GET /question` or `POST /answer` will be rejected.
 
 ### 3.2 Redis key structure
 
@@ -157,30 +161,13 @@ All keys are namespaced:
   - Per IP (if relevant): `teleexam:rl:ip:{ip}:{route}`
 - **Question token (`qtoken`) (mandatory)**:
   - Issued on every `GET /question`, required on `POST /answer`.
-  - Key: `teleexam:qtoken:{session_id}:{current_index}` → random token string
+  - Key: `teleexam:qtoken:{user_id}:{session_id}:{question_id}` → random token string
   - TTL: **60–120 seconds** (recommended default 90s)
   - Single-use: validated and deleted atomically at answer acceptance time (Lua).
 - **Behavior tracking (anti-bot)**:
   - `teleexam:rt:{session_id}:{current_index}` → question served timestamp (seconds) (TTL aligned with session)
-  - `teleexam:behavior:{user_id}` (hash) → counters (fast_answer_count, invalid_qtoken_count, invalid_session_count) + last_seen_ts
+  - `teleexam:behavior:{user_id}` (hash) → counters (fast_answer_count, invalid_qtoken_count, invalid_session_count, request_rate_spike_count) + last_seen_ts
   - `teleexam:flag:{user_id}` → `suspected_bot|throttled|blocked` (TTL 1–24h)
-
-### 3.6 Redis memory optimization (required for free-tier)
-
-**Goal**: keep Redis hot keys small and bounded for 1000+ concurrent sessions.
-
-- **Store only IDs in session**:
-  - `question_ids` as UUID array (JSON) or Redis list; do not embed full question payload.
-- **Bounded answers**:
-  - `answers` stores only `{selected_choice, answered_at}` (and `is_correct` only if computed).
-  - Do not store LLM explanations in the session.
-- **Cache question payload separately** (optional):
-  - `teleexam:question_cache:{question_id}` TTL 30–120 min.
-- **Prefer Redis Hash fields** over large JSON rewrites:
-  - Store `question_ids` once, `current_index` and per-answer fields incrementally.
-- **Avoid unbounded ZSET growth** in rate limiting:
-  - Always trim items older than window on each request.
-
 
 ### 3.3 Session lifecycle flows (mandatory behavior)
 
@@ -188,6 +175,10 @@ All keys are namespaced:
 
 1. Validate user eligibility (feature gating, mode limits, cooldowns).
 2. Pick question IDs (Postgres query) and **randomize order** deterministically using `seed`.
+    - **Question Randomization**:
+        - **No repeated questions per session**: The initial `question_ids` list generated for a session must contain unique questions.
+        - **Deterministic shuffle using seed**: The order of `question_ids` is shuffled using a unique `seed` stored in the session. This allows for reproducibility and auditability.
+        - **Per-user randomized answer choices**: For each question, the order of choices (A, B, C, D) is randomized per user per session, also deterministically using the session `seed` or a derived seed. The correct answer mapping must be maintained internally.
 3. Create `session_id` and write:
    - `teleexam:session:{session_id}` (hash/json)
    - `teleexam:user:{user_id}:active_session:{mode}` = `session_id` (**SETNX enforced**)
@@ -204,7 +195,7 @@ All keys are namespaced:
   - Validate deadline not exceeded (exam/quiz).
   - Read `current_index`, return only the current question content.
   - Store served time: `teleexam:rt:{session_id}:{current_index} = now`.
-  - **Issue `qtoken`**: `teleexam:qtoken:{session_id}:{current_index} = <random>` with TTL 60–120s.
+  - **Issue `qtoken`**: `teleexam:qtoken:{user_id}:{session_id}:{question_id}` = `<random>` with TTL 60–120s.
   - **Exam mode**: return `image_url` (and do not return full prompt text).
 
 #### Save answer
@@ -212,7 +203,12 @@ All keys are namespaced:
 - Request: `POST /api/sessions/{session_id}/answer`
 - Server:
   - Validate session and that `question_id` == current question.
-  - **Validate `qtoken`** for `{session_id, current_index}` and delete it atomically (single-use).
+  - **Validate `qtoken`**:
+    - The incoming `qtoken` must match the one stored in `teleexam:qtoken:{user_id}:{session_id}:{question_id}`.
+    - The `qtoken` must not be expired.
+    - The `user_id`, `session_id`, and `question_id` embedded in the Redis key must match the request context.
+    - After successful validation, the `qtoken` is deleted atomically (single-use) to prevent replay.
+    - If validation fails (missing, expired, or mismatched `user_id`/`session_id`/`question_id`), return `403 Forbidden` with `invalid_qtoken` code.
   - Compute response time using `teleexam:rt:{session_id}:{current_index}` and update `teleexam:behavior:{user_id}` counters.
   - Write answer into Redis `answers` dict.
   - For practice/quiz: compute correctness immediately; for exam: optionally defer correctness until submit.
@@ -275,6 +271,57 @@ Example policies (tune in config):
 - Global: 120 req/min per telegram_id
 
 Return `429` with `Retry-After`.
+
+### 3.6 Idempotency System
+
+To ensure reliable operations and prevent duplicate processing of requests, an idempotency system is implemented using an `Idempotency-Key` header.
+
+#### 3.6.1 Idempotency-Key Header
+
+- **Mechanism**: Clients (e.g., Telegram Bot) can include an `X-Idempotency-Key: <UUID>` header in `POST` requests that should be idempotent.
+- **Applicable Endpoints**:
+    - `POST /api/sessions/start`
+    - `POST /api/sessions/{session_id}/answer`
+    - `POST /api/sessions/{session_id}/submit`
+- **Validation**: The backend will validate the UUID format of the `Idempotency-Key`.
+
+#### 3.6.2 Redis Storage Pattern
+
+- **Key**: `teleexam:idempotency:{idempotency_key}`
+- **Value**: Stores a JSON object containing:
+    - `status`: `processing | completed | failed`
+    - `response`: The full HTTP response (status code, headers, body) if `completed`.
+    - `request_hash`: A hash of the original request body to detect mismatched retries.
+    - `created_at`: Timestamp of the first request.
+- **TTL**: A short TTL (e.g., 5 minutes) is set on the idempotency key to prevent Redis bloat.
+
+#### 3.6.3 Duplicate Request Handling
+
+1.  **First Request**:
+    *   When a request with a new `Idempotency-Key` arrives, the backend stores `teleexam:idempotency:{key}` with `status: processing` and `request_hash`.
+    *   The request is processed normally.
+    *   Upon completion (success or failure), the Redis key is updated with `status: completed | failed` and the full response.
+2.  **Subsequent Requests (with same key)**:
+    *   If a request with an existing `Idempotency-Key` arrives:
+        *   **If `status: processing`**: The request is rejected with `409 Conflict` and a `request_in_progress` error code, indicating the client should wait and retry.
+        *   **If `status: completed`**: The stored response is immediately returned without re-processing the request. A check is performed to ensure `request_hash` matches; if not, `409 Conflict` with `idempotency_key_mismatch` is returned.
+        *   **If `status: failed`**: The stored error response is returned. A check is performed to ensure `request_hash` matches; if not, `409 Conflict` with `idempotency_key_mismatch` is returned.
+
+### 3.7 Redis memory optimization (required for free-tier)
+
+**Goal**: keep Redis hot keys small and bounded for 1000+ concurrent sessions.
+
+- **Store only IDs in session**:
+  - `question_ids` as UUID array (JSON) or Redis list; do not embed full question payload.
+- **Bounded answers**:
+  - `answers` stores only `{selected_choice, answered_at}` (and `is_correct` only if computed).
+  - Do not store LLM explanations in the session.
+- **Cache question payload separately** (optional):
+  - `teleexam:question_cache:{question_id}` TTL 30–120 min.
+- **Prefer Redis Hash fields** over large JSON rewrites:
+  - Store `question_ids` once, `current_index` and per-answer fields incrementally.
+- **Avoid unbounded ZSET growth** in rate limiting:
+  - Always trim items older than window on each request.
 
 ---
 
@@ -369,7 +416,7 @@ All errors return JSON:
 | Status | When returned | Typical codes |
 |---|---|---|
 | `403 Forbidden` | invalid/expired/missing `qtoken`; banned user; failed shared secret | `invalid_qtoken`, `banned`, `unauthorized_bot` |
-| `409 Conflict` | out-of-sync state (wrong question_id), active session already exists, illegal transition | `state_conflict`, `active_session_exists` |
+| `409 Conflict` | out-of-sync state (wrong question_id), active session already exists, illegal transition | `state_conflict`, `active_session_exists`, `session_expired`, `request_in_progress`, `idempotency_key_mismatch` |
 | `429 Too Many Requests` | rate limit or behavioral throttling | `rate_limited`, `throttled` |
 | `503 Service Unavailable` | Redis/DB/LLM dependency unavailable for that operation | `redis_unavailable`, `db_unavailable`, `llm_unavailable` |
 
@@ -549,6 +596,21 @@ class SubmitSessionResponse(BaseModel):
 - `GET /admin/users?query=...&limit=...&offset=...`
 - `PATCH /admin/users/{user_id}`
   - e.g., set `is_pro`, `plan_expiry`, ban flags.
+- **Admin Control Expansion**:
+    - `POST /admin/users/{user_id}/ban`
+        - Body: `reason: str`, `duration_hours: int | None`
+        - Action: Sets `is_banned=true` and `ban_reason` in `users` table. Creates `teleexam:flag:{user_id}=blocked` in Redis.
+    - `POST /admin/users/{user_id}/unban`
+        - Action: Sets `is_banned=false` in `users` table. Deletes `teleexam:flag:{user_id}` from Redis.
+    - `POST /admin/sessions/{session_id}/force-end`
+        - Action: Marks session as `completed` or `expired` in Redis, persists results if applicable, and deletes active session pointers.
+    - `POST /admin/sessions/{session_id}/reset`
+        - Action: Deletes the session from Redis, effectively forcing the user to start a new one.
+    - `GET /admin/users/flagged`
+        - Returns: List of users currently flagged by behavioral detection (`teleexam:flag:{user_id}` in Redis) or `is_banned=true` in Postgres.
+    - `PATCH /admin/config/limits`
+        - Body: `limit_type: str`, `value: int`, `scope: str` (e.g., `limit_type="ai_explain_quota"`, `value=20`, `scope="free_plan"`)
+        - Action: Dynamically adjusts system limits (e.g., rate limits, AI quotas, invite thresholds). Requires careful implementation to ensure consistency across running instances.
 
 **Admin responses must be pagination-safe** and index-backed.
 
@@ -926,8 +988,18 @@ Enforce in service layer + dependency:
   - Deterministic shuffle using session `seed` to support audits.
 - **Image rendering (exam mode: mandatory)**:
   - Exam mode must return `image_url` (short-lived signed URL) and not full text.
-  - Watermark overlay recommended:
-    - `telegram_id`, `session_id`, `index`, timestamp (light opacity).
+  - **Dynamic Watermark**:
+      - Images are dynamically watermarked with `telegram_id`, `session_id`, and a timestamp. This watermark is rendered with light opacity to be visible but not obstructive, making screenshots traceable.
+      - The watermark generation happens server-side during image creation or proxying.
+  - **Signed/Expiring Image URLs**:
+      - `image_url`s are generated as pre-signed URLs (e.g., from S3 or a custom image service) with a very short expiration time (e.g., 5-10 minutes). This prevents long-term sharing or scraping of image assets.
+      - The image service (or FastAPI itself, if proxying) validates the signature and expiration before serving the image.
+  - **Optional Per-Request Image Variation**:
+      - To further deter scraping, a subtle, non-content-altering variation (e.g., minor pixel noise, color shift, or background pattern) can be applied to the image on a per-request basis. This makes image hashing for bulk detection more difficult. This is an advanced feature and should be configurable.
+  - **Image Generation and Delivery**:
+      - Questions are rendered into images by a dedicated image generation service (e.g., using headless browser or image processing library).
+      - These images are stored temporarily in an object storage (e.g., S3-compatible bucket).
+      - FastAPI generates a signed, expiring URL for the image and returns it in the `GET /question` response.
 - **Replay attack prevention (mandatory)**:
   - `qtoken` (Section 3/4/5) is single-use and expires in 60–120s.
   - Prevents replays and “bot answering” from a captured payload.
@@ -940,12 +1012,13 @@ Enforce in service layer + dependency:
   - Track per-user and per-session timings in Redis:
     - time from serve→answer, invalid token rate, request bursts.
   - Suspicion rules (example defaults):
-    - answer time < 1.0s on ≥3 questions in a session → `suspected_bot`
-    - invalid/expired qtoken > 5/min → throttle
+    - **Too-fast answering**: `answer_time < 1.0s` on `≥3` questions in a session → `suspected_bot`
+    - **Invalid qtoken attempts**: `invalid_qtoken_count > 5/min` → throttle
+    - **Request rate spikes**: `request_rate > X` times normal baseline for user/route → throttle/flag
   - Mitigations (server-side):
-    - throttle: return `429` and increase per-route rate limit strictness
-    - temporary block: `403` for 15–60 minutes (`teleexam:flag:{user_id}=blocked`)
-    - admin flag: log `activity_logs` event `bot_suspected` with counters
+    - **Throttle**: return `429` and increase per-route rate limit strictness. This is a temporary reduction in allowed request rate.
+    - **Temporary block**: `403` for 15–60 minutes (`teleexam:flag:{user_id}=blocked`). This completely denies access for a short period.
+    - **Admin flag**: log `activity_logs` event `bot_suspected` with counters. This alerts administrators for manual review and potential permanent ban.
 - **Abuse signals**:
   - Log suspicious patterns:
     - Too-fast answering times.
@@ -1090,9 +1163,68 @@ app/
 
 ---
 
-## 13. JSON → Database Ingestion Pipeline (Idempotent + Validated + Logged)
+## 13. Observability
 
-### 13.1 Input format requirements (per question record)
+A robust observability strategy is critical for understanding system health, performance, and user behavior in production.
+
+### 13.1 Structured Logging
+
+All application logs must be structured (JSON format recommended) to facilitate easy parsing, filtering, and analysis by log aggregation systems.
+
+- **Key Fields (minimum)**:
+    - `timestamp`: ISO 8601 format.
+    - `level`: `INFO`, `WARNING`, `ERROR`, `DEBUG`.
+    - `service`: `teleexam-api`.
+    - `version`: Application version/commit hash.
+    - `request_id`: Unique ID for each incoming HTTP request (generated by `RequestIdMiddleware`).
+    - `user_id`: Internal UUID of the user (if authenticated).
+    - `telegram_id`: Telegram ID of the user (if authenticated).
+    - `endpoint`: The API endpoint being called (e.g., `/api/sessions/start`).
+    - `message`: Human-readable log message.
+    - `details`: JSON object for additional context (e.g., `session_id`, `question_id`, `error_code`, `latency_ms`).
+- **Sensitive Data**: Ensure no sensitive user data (passwords, full PII) is logged.
+- **Log Aggregation**: Logs should be shipped to a centralized logging system (e.g., ELK stack, Grafana Loki, Datadog Logs) for analysis and alerting.
+
+### 13.2 Metrics
+
+Key performance indicators (KPIs) and system health metrics are collected and exposed for monitoring.
+
+- **Request Metrics**:
+    - `http_requests_total`: Counter for total HTTP requests, labeled by `endpoint`, `method`, `status_code`.
+    - `http_request_duration_seconds`: Histogram for request latency, labeled by `endpoint`, `method`.
+    - `http_requests_in_flight`: Gauge for currently active requests.
+- **Error Metrics**:
+    - `application_errors_total`: Counter for internal application errors, labeled by `error_type`, `endpoint`.
+    - `redis_errors_total`: Counter for Redis connection/command errors.
+    - `postgres_errors_total`: Counter for PostgreSQL connection/query errors.
+    - `llm_api_errors_total`: Counter for external LLM API errors.
+- **Business Metrics**:
+    - `active_sessions_total`: Gauge for current number of active Redis sessions, labeled by `mode`.
+    - `qtoken_validations_total`: Counter for qtoken validations, labeled by `result` (valid/invalid/expired).
+    - `user_bans_total`: Counter for users banned by admin or automated system.
+    - `ai_explanation_requests_total`: Counter for AI explanation requests, labeled by `plan_type` (free/pro).
+- **Metrics Collection**: Metrics should be exposed in a Prometheus-compatible format via a `/metrics` endpoint.
+
+### 13.3 Monitoring & Alerting Strategy
+
+- **Dashboards**: Create Grafana (or similar) dashboards for real-time visualization of all key metrics.
+    - **System Health**: CPU, Memory, Network I/O, Disk Usage for API instances, Redis, Postgres.
+    - **Application Performance**: Request rates, latencies (p50, p95, p99), error rates per endpoint.
+    - **Business Insights**: Active users, session starts/completes, AI usage, referral conversions.
+- **Alerting**: Configure alerts for critical thresholds to notify on-call engineers.
+    - **Error Rate**: High percentage of 5xx errors for any endpoint.
+    - **Latency Spikes**: p95 latency exceeding predefined thresholds.
+    - **Resource Exhaustion**: High CPU/Memory usage on any service.
+    - **Dependency Failure**: Redis/Postgres/LLM API errors.
+    - **Security Alerts**: High rate of `invalid_qtoken` or `banned` user attempts.
+    - **Business Alerts**: Sudden drop in active sessions or exam completions.
+- **Alert Channels**: Integrate with communication platforms (e.g., PagerDuty, Slack, Telegram) for alert delivery.
+
+---
+
+## 14. JSON → Database Ingestion Pipeline (Idempotent + Validated + Logged)
+
+### 14.1 Input format requirements (per question record)
 
 Each JSON record must map to:
 
@@ -1102,21 +1234,21 @@ Each JSON record must map to:
 - `correct_choice`
 - `difficulty?`, `source?`, `explanation_static?`
 
-### 13.2 Validation
+### 14.2 Validation
 
 - Use Pydantic schema validation (reject invalid).
 - Normalize whitespace, ensure choices exist, correct choice in A–D.
 - Compute `content_hash` as SHA-256 over normalized content:
   - course_code + topic_code + prompt + A+B+C+D + correct_choice
 
-### 13.3 Idempotent insert strategy
+### 14.3 Idempotent insert strategy
 
 - Insert course/topic if missing (upsert by code).
 - Insert question with `UNIQUE(content_hash)`:
   - `INSERT ... ON CONFLICT (content_hash) DO NOTHING`
 - Log failed records to a file + `activity_logs` event `ingest_failed` with reason.
 
-### 13.4 Operational logging
+### 14.4 Operational logging
 
 For each ingest run:
 
@@ -1127,9 +1259,9 @@ For each ingest run:
 
 ---
 
-## 14. Performance & Scalability (1000+ concurrent users on free-tier)
+## 15. Performance & Scalability (1000+ concurrent users on free-tier)
 
-### 14.1 Core strategies
+### 15.1 Core strategies
 
 - **Async I/O everywhere** (FastAPI async endpoints, async Postgres, async Redis).
 - **Redis as hot path**:
@@ -1145,16 +1277,16 @@ For each ingest run:
   - Cache question payload:
     - `teleexam:question_cache:{question_id}` (TTL 30–120 min)
 
-### 14.2 Postgres index hygiene
+### 15.2 Postgres index hygiene
 
 - Ensure all admin queries have supporting indexes.
 - Partition `activity_logs` by month if volume grows (future).
 
 ---
 
-## 15. Data Flow Diagrams (End-to-End)
+## 16. Data Flow Diagrams (End-to-End)
 
-### 15.1 Start exam → sequential questions → submit (Redis session)
+### 16.1 Start exam → sequential questions → submit (Redis session)
 
 ```mermaid
 sequenceDiagram
@@ -1191,7 +1323,7 @@ sequenceDiagram
   API-->>Bot: final score summary
 ```
 
-### 15.2 Practice mode with instant explanation (AI)
+### 16.2 Practice mode with instant explanation (AI)
 
 ```mermaid
 sequenceDiagram
@@ -1221,7 +1353,7 @@ sequenceDiagram
   API-->>Bot: is_correct + explanation
 ```
 
-### 15.3 Referral credit on first quiz completion
+### 16.3 Referral credit on first quiz completion
 
 ```mermaid
 sequenceDiagram
@@ -1237,17 +1369,17 @@ sequenceDiagram
   Bot->>API: ... complete quiz ...
   Bot->>API: POST /api/sessions/{sid}/submit
   API->>PG: insert exam_results (mode=quiz)
-  API->>PG: if first_quiz_completed=false: set true; increment inviter.invite_count
+  API->>PG: if first_quiz_completed=false: set true; increment inviter’s invite_count
   API-->>Bot: quiz summary
 ```
 
 ---
 
-## 16. Telegram Bot Interaction Model (Telegram-first UX + Error Handling)
+## 17. Telegram Bot Interaction Model (Telegram-first UX + Error Handling)
 
 This section defines the bot ↔ backend contract at the conversational level. The bot is the UX layer; the backend is the policy engine.
 
-### 16.1 Deep link invite logic
+### 17.1 Deep link invite logic
 
 - Bot receives `/start?ref=<invite_code>`.
 - Bot calls `POST /api/users/upsert` with `ref_code`.
@@ -1260,7 +1392,7 @@ This section defines the bot ↔ backend contract at the conversational level. T
 - Bot must pass `X-Telegram-Id` on every request.
 - Bot must not “credit” invites locally; backend is source of truth.
 
-### 16.2 Exam session flow (chat UX)
+### 17.2 Exam session flow (chat UX)
 
 Recommended chat states:
 
@@ -1287,13 +1419,13 @@ Bot call sequence (exam):
   - immediately refetch the current question (`GET /question`) to obtain a new `qtoken`,
   - re-render the question and buttons.
 
-### 16.3 Quiz mode flow (onboarding + referral reward trigger)
+### 17.3 Quiz mode flow (onboarding + referral reward trigger)
 
 - Start quiz → short session
 - After each answer, show correctness + short explanation (static or AI based on plan)
 - On completion, show score and encourage invite sharing
 
-### 16.4 Timeout and retry behavior
+### 17.4 Timeout and retry behavior
 
 - If `GET /question` returns `404` (session missing / TTL expired):
   - Bot should display: “Session expired. Start again.” and clear local `session_id`.
@@ -1305,9 +1437,9 @@ Bot call sequence (exam):
 
 ---
 
-## 17. Failure Handling & Degraded Mode (Redis/DB/LLM)
+## 18. Failure Handling & Degraded Mode (Redis/DB/LLM)
 
-### 17.1 Redis failure
+### 18.1 Redis failure
 
 Redis is the source of truth for active sessions; if Redis is unavailable:
 
@@ -1319,7 +1451,7 @@ Redis is the source of truth for active sessions; if Redis is unavailable:
 - **Admin**:
   - Admin queries may still work if Postgres is healthy; keep separate failure domains.
 
-### 17.2 Postgres failure
+### 18.2 Postgres failure
 
 - `start_session` can still work if questions are cached; otherwise return `503`.
 - `submit_session` must either:
@@ -1332,7 +1464,7 @@ Redis is the source of truth for active sessions; if Redis is unavailable:
   - `teleexam:submit_snapshot:{session_id}` TTL 10–30 minutes
 - On `submit` retry, use snapshot to recompute/persist without requiring user to re-answer.
 
-### 17.3 Groq/LLM failure
+### 18.3 Groq/LLM failure
 
 - Practice/quiz explanations:
   - Prefer `questions.explanation_static` when available.
@@ -1342,7 +1474,7 @@ Redis is the source of truth for active sessions; if Redis is unavailable:
 - Tutor:
   - Return `503` with user-friendly message in bot UI.
 
-### 17.4 Partial session recovery policy
+### 18.4 Partial session recovery policy
 
 - If session TTL expires, session is unrecoverable by default.
 - Optional “grace TTL”:
@@ -1351,15 +1483,15 @@ Redis is the source of truth for active sessions; if Redis is unavailable:
 
 ---
 
-## 18. Security (Input Validation, Abuse Prevention, Secure Invites)
+## 19. Security (Input Validation, Abuse Prevention, Secure Invites)
 
-### 18.1 Input validation
+### 19.1 Input validation
 
 - Validate all UUIDs, enum values (`mode`, answer choices), and numeric bounds (`question_count`).
 - Enforce maximum payload sizes (body length limits).
 - Reject invalid state transitions with `409 Conflict`.
 
-### 18.2 Abuse prevention (anti-spam / anti-scraping)
+### 19.2 Abuse prevention (anti-spam / anti-scraping)
 
 - Redis sliding-window rate limits per:
   - user_id + route
@@ -1373,7 +1505,7 @@ Redis is the source of truth for active sessions; if Redis is unavailable:
   - `users.is_banned` and `ban_reason`
   - admin endpoint to ban/unban
 
-### 18.3 Secure invite system rules
+### 19.3 Secure invite system rules
 
 - `ref_code` accepted only on **first user creation**.
 - Never allow changing `invited_by_user_id` after creation.
@@ -1381,9 +1513,57 @@ Redis is the source of truth for active sessions; if Redis is unavailable:
 
 ---
 
-## 19. Deployment Design (Free-tier Strategy, Docker, Environment)
+## 20. Deployment Architecture
 
-### 19.1 Free-tier deployment strategy (practical baseline)
+This section outlines the recommended deployment architecture for TeleExam AI, focusing on scalability, resilience, and cost-effectiveness, especially for free-tier constraints.
+
+### 20.1 Docker-based Deployment
+
+- **Containerization**: All services (FastAPI application, Redis, PostgreSQL) are containerized using Docker. This ensures consistent environments across development, testing, and production.
+- **Dockerfile**: A single `Dockerfile` for the FastAPI application defines the build process, including dependencies and application code.
+- **Docker Compose**: Used for local development and testing to orchestrate multi-container applications. In production, Kubernetes or similar orchestration tools will manage containers.
+
+### 20.2 FastAPI Scaling
+
+- **Multiple Instances**: The FastAPI application is designed to be stateless, allowing for easy horizontal scaling. Multiple instances of the FastAPI application can be run concurrently.
+- **Gunicorn/Uvicorn**: Production deployments will use Gunicorn as a process manager with Uvicorn workers (e.g., `gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app`). The number of workers should be tuned based on available CPU cores and memory.
+- **Asynchronous Nature**: FastAPI's asynchronous nature (ASGI) allows it to handle a large number of concurrent connections efficiently with fewer worker processes compared to traditional WSGI applications.
+
+### 20.3 Redis + Postgres Setup
+
+- **Redis**:
+    - **Managed Service**: For production, a managed Redis service (e.g., AWS ElastiCache, Google Cloud Memorystore, Upstash) is highly recommended for high availability, automatic backups, and operational ease.
+    - **Single Instance (Free-tier)**: For free-tier optimization, a single, appropriately sized Redis instance is sufficient, with careful monitoring of memory usage and connection limits.
+- **PostgreSQL**:
+    - **Managed Service**: A managed PostgreSQL service (e.g., AWS RDS, Google Cloud SQL, Supabase) is crucial for production for reliability, scalability, and reduced operational overhead.
+    - **Connection Pooling**: The FastAPI application must use an asynchronous connection pool (e.g., `asyncpg` with SQLAlchemy's `AsyncEngine`) to efficiently manage database connections and prevent connection storms.
+    - **Read Replicas (Future)**: For higher read loads, read replicas can be introduced to offload read traffic from the primary database.
+
+### 20.4 Optional Load Balancer (Nginx)
+
+- **Reverse Proxy**: An Nginx (or similar) load balancer can be placed in front of the FastAPI instances.
+- **Features**:
+    - **Load Distribution**: Distributes incoming traffic across multiple FastAPI instances.
+    - **SSL Termination**: Handles SSL/TLS encryption, offloading this task from the application servers.
+    - **Static File Serving**: Can serve static assets (if any) directly, reducing load on FastAPI.
+    - **Rate Limiting (Edge)**: Can provide an additional layer of basic rate limiting before requests even hit the application.
+    - **Health Checks**: Monitors the health of FastAPI instances and routes traffic only to healthy ones.
+
+### 20.5 Free-tier Optimization Strategy
+
+- **Minimal Instance Count**: Start with the minimum number of FastAPI instances (1-2) and scale up only when necessary based on load.
+- **Smallest Managed Services**: Utilize the smallest available tiers for managed Redis and PostgreSQL services that meet performance requirements.
+- **Redis Memory Management**: Aggressively manage Redis memory by setting appropriate TTLs for all keys and optimizing session object size (as detailed in Section 3.7).
+- **Efficient Database Queries**: Ensure all database queries are optimized and indexed to minimize database load.
+- **Caching**: Leverage Redis caching for frequently accessed, less volatile data (e.g., user profiles, question payloads) to reduce database reads.
+- **Cost-Aware Logging/Metrics**: Be mindful of the volume of logs and metrics generated, as these can incur significant costs in managed services. Implement sampling or aggregation if necessary.
+- **Serverless (Future Consideration)**: For extreme cost optimization and burstable workloads, a serverless deployment model (e.g., AWS Lambda with API Gateway) could be considered, but it introduces different complexities (cold starts, vendor lock-in).
+
+---
+
+## 21. Deployment Design (Free-tier Strategy, Docker, Environment)
+
+### 21.1 Free-tier deployment strategy (practical baseline)
 
 Target: 1000+ concurrent users with minimal DB load.
 
@@ -1391,7 +1571,7 @@ Target: 1000+ concurrent users with minimal DB load.
 - Use a small managed Postgres.
 - Use a small Redis instance; memory sizing driven by concurrent sessions + rate limit keys.
 
-### 19.2 Docker setup (runtime model)
+### 21.2 Docker setup (runtime model)
 
 - `Dockerfile` builds one image.
 - Run services:
@@ -1399,7 +1579,7 @@ Target: 1000+ concurrent users with minimal DB load.
   - `redis`
   - `postgres` (local dev) / managed in prod
 
-### 19.3 Environment configuration (required variables)
+### 21.3 Environment configuration (required variables)
 
 - **Core**:
   - `APP_ENV`, `LOG_LEVEL`
@@ -1414,10 +1594,9 @@ Target: 1000+ concurrent users with minimal DB load.
 - **Rate limit / quota policy**:
   - window sizes and thresholds (per route)
 
-### 19.4 Observability (minimum)
+### 21.4 Observability (minimum)
 
 - Structured JSON logs with:
   - request_id, user_id, telegram_id, route, latency_ms, status_code
 - Metrics (Prometheus-style or hosted):
   - request rate, p95 latency, 429 count, Redis errors, DB errors, active sessions
-
