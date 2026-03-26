@@ -9,6 +9,22 @@
 
 ---
 
+## 0. Architecture Review — What Was Missing / Weak (and What This Spec Adds)
+
+The previous architecture doc (v3.5) was strong on “monolith + AI stack” but not implementable for production at 1000+ concurrent users. The gaps below are now addressed explicitly in this v4.0 spec.
+
+| Area | What was missing/weak | What this spec defines (implementation-level) |
+|---|---|---|
+| Redis sessions | No concrete Redis session model/keys/TTL; risk of state in app memory | Session schema, key namespace, TTL strategy, atomic Lua transitions, one-question fetch policy |
+| Exam engine | No strict state machine, bounds rules, or sequential enforcement | Formal state machine, mode rules, validation checks, deadline handling, mandatory `qtoken` |
+| Anti-scrape | Only general “rate limit” mention; no concrete mechanisms | No bulk API, strict sequential access, mandatory `qtoken`, exam image delivery, rate limiting + behavioral throttling |
+| Referral growth | Not specified end-to-end; no idempotency rules | Deep link flow, `invite_code`, `invited_by_user_id`, credit-on-first-quiz logic with safe state |
+| Admin control plane | Not defined; no JWT/RBAC; unclear metrics queries | Admin JWT auth, RBAC, endpoints, definitions for DAU/funnel/referrals, index-backed queries |
+| Analytics engine | Mentioned future; no durable facts schema | `user_topic_errors` fact table, weak-topics ranking query, write strategy on submit |
+| API contracts | Routes existed as names only; no request/response shapes | Full endpoint list with enforced invariants and response payload contracts |
+| Failure handling | No Redis/DB failure behavior; no partial recovery guidance | Degraded-mode rules, idempotency keys, submit recovery strategy, consistent error mapping |
+| Deployment | Not specified for free-tier constraints | Free-tier sizing guidance, Docker/env config, connection pooling, observability baseline |
+
 ## 1. System Overview
 
 TeleExam AI (CS‑Ethiopia) is a Telegram-first, AI-powered exam preparation platform. The backend is a **stateless FastAPI API** that enforces **sequential question access**, **Redis-first sessions**, and **anti-cheating / anti-scraping controls** while persisting only durable records to **PostgreSQL**.
@@ -32,7 +48,7 @@ TeleExam AI (CS‑Ethiopia) is a Telegram-first, AI-powered exam preparation pla
   - No bulk question APIs.
   - One question per request, sequential access bound to session.
   - Request rate limits with Redis sliding window.
-  - Optional image-rendered questions for high-risk modes.
+  - Exam mode uses image-rendered questions + `qtoken` (hard enforced).
 
 ### 1.2 Primary user flows
 
@@ -42,6 +58,35 @@ TeleExam AI (CS‑Ethiopia) is a Telegram-first, AI-powered exam preparation pla
 - **AI**: explanations (post-answer rules) + tutor chat + study plan generator (uses weak-topic analytics).
 - **Growth**: referral links; inviter credited when invitee completes first quiz.
 - **Admin**: DAU, referral leaderboard, exam funnel/completion, question performance, user management.
+
+### 1.3 Security Enforcement Rules (Hard Constraints)
+
+These rules are **non-negotiable** and **override any optional configuration**. If a feature conflicts with these constraints, the feature must be redesigned.
+
+- **Strict sequential access (all modes)**:
+  - Users can only fetch the **current question** where `index == current_index`.
+  - No skipping, no arbitrary index access, no `index` query param.
+- **Mandatory `qtoken` (single-use, short-lived)**:
+  - Every `GET /api/sessions/{session_id}/question` returns a `qtoken` with TTL **60–120 seconds**.
+  - Every `POST /api/sessions/{session_id}/answer` must include that `qtoken`.
+  - The backend must validate **and delete** the token atomically (single-use) to prevent replay.
+- **Single active session per user per mode**:
+  - A user may have at most **one active** session per mode (`exam`, `practice`, `quiz`).
+  - Enforced via Redis `SETNX` on `teleexam:user:{user_id}:active_session:{mode}` (see Section 3).
+  - Starting a new session while one exists must be rejected with `409 Conflict`.
+- **No backtracking in exam mode**:
+  - No `prev`, no “review”, no index override. Exam is **forward-only**.
+- **Image-only question delivery in exam mode**:
+  - Exam `GET /question` returns `image_url` (not full text).
+  - Image may include watermark with `telegram_id` and `session_id` (recommended).
+- **Lazy question loading / no question list exposure**:
+  - The backend must **never** return the full `question_ids` list to clients.
+  - Session may store minimal IDs internally (Redis only) and/or use deterministic seed-based selection.
+- **AI access control**:
+  - `/api/ai/explain` is **blocked** for exam sessions unless the session is **completed**.
+- **Behavioral anti-bot detection**:
+  - Backend tracks timing + request patterns in Redis and applies mitigation:
+    - throttle (429), temporary block (403), and admin flagging.
 
 ---
 
@@ -59,7 +104,7 @@ flowchart LR
     R1[Sessions: teleexam:session:{session_id}]
     R2[Rate limits: teleexam:rl:*]
     R3[Locks: teleexam:lock:*]
-    R4[Nonces: teleexam:nonce:*]
+    R4[Question tokens: teleexam:qtoken:*]
     R --> R1
     R --> R2
     R --> R3
@@ -100,14 +145,42 @@ flowchart LR
 All keys are namespaced:
 
 - **Session**: `teleexam:session:{session_id}`
+- **Session by user (compat alias / fast lookup)**:
+  - `teleexam:exam_session:{user_id}` → `{session_id}` (exam only)
+  - `teleexam:practice_session:{user_id}` → `{session_id}` (practice only)
+  - `teleexam:quiz_session:{user_id}` → `{session_id}` (quiz only)
 - **Session index per user** (single active session per mode): `teleexam:user:{user_id}:active_session:{mode}` → `{session_id}`
 - **Session lock** (per session): `teleexam:lock:session:{session_id}` → short TTL
 - **Rate limits**:
   - Per user: `teleexam:rl:user:{user_id}:{route}` (sorted set or fixed window buckets)
   - Per telegram_id: `teleexam:rl:tg:{telegram_id}:{route}`
   - Per IP (if relevant): `teleexam:rl:ip:{ip}:{route}`
-- **Anti-replay nonce**: `teleexam:nonce:{session_id}:{nonce}` → `1` with short TTL
-- **Question access token** (optional): `teleexam:qtoken:{session_id}:{question_id}` → token (TTL ~ 2–5 minutes)
+- **Question token (`qtoken`) (mandatory)**:
+  - Issued on every `GET /question`, required on `POST /answer`.
+  - Key: `teleexam:qtoken:{session_id}:{current_index}` → random token string
+  - TTL: **60–120 seconds** (recommended default 90s)
+  - Single-use: validated and deleted atomically at answer acceptance time (Lua).
+- **Behavior tracking (anti-bot)**:
+  - `teleexam:rt:{session_id}:{current_index}` → question served timestamp (seconds) (TTL aligned with session)
+  - `teleexam:behavior:{user_id}` (hash) → counters (fast_answer_count, invalid_qtoken_count, invalid_session_count) + last_seen_ts
+  - `teleexam:flag:{user_id}` → `suspected_bot|throttled|blocked` (TTL 1–24h)
+
+### 3.6 Redis memory optimization (required for free-tier)
+
+**Goal**: keep Redis hot keys small and bounded for 1000+ concurrent sessions.
+
+- **Store only IDs in session**:
+  - `question_ids` as UUID array (JSON) or Redis list; do not embed full question payload.
+- **Bounded answers**:
+  - `answers` stores only `{selected_choice, answered_at}` (and `is_correct` only if computed).
+  - Do not store LLM explanations in the session.
+- **Cache question payload separately** (optional):
+  - `teleexam:question_cache:{question_id}` TTL 30–120 min.
+- **Prefer Redis Hash fields** over large JSON rewrites:
+  - Store `question_ids` once, `current_index` and per-answer fields incrementally.
+- **Avoid unbounded ZSET growth** in rate limiting:
+  - Always trim items older than window on each request.
+
 
 ### 3.3 Session lifecycle flows (mandatory behavior)
 
@@ -117,7 +190,9 @@ All keys are namespaced:
 2. Pick question IDs (Postgres query) and **randomize order** deterministically using `seed`.
 3. Create `session_id` and write:
    - `teleexam:session:{session_id}` (hash/json)
-   - `teleexam:user:{user_id}:active_session:{mode}` = `session_id` (SETNX or overwrite with safe checks)
+   - `teleexam:user:{user_id}:active_session:{mode}` = `session_id` (**SETNX enforced**)
+     - If SETNX fails (key exists), reject with `409 Conflict` (single active session per mode).
+     - If key exists but referenced session is missing (expired), delete pointer and retry once.
 4. Set TTL on session key.
 5. Return only `session_id` + metadata (no full question list returned).
 
@@ -127,14 +202,18 @@ All keys are namespaced:
 - Server:
   - Validate session exists, belongs to user, status `in_progress`.
   - Validate deadline not exceeded (exam/quiz).
-  - Read `current_index`, return only `question_ids[current_index]` content.
-  - Optionally return **rendered image** for exam mode if anti-scrape is enabled.
+  - Read `current_index`, return only the current question content.
+  - Store served time: `teleexam:rt:{session_id}:{current_index} = now`.
+  - **Issue `qtoken`**: `teleexam:qtoken:{session_id}:{current_index} = <random>` with TTL 60–120s.
+  - **Exam mode**: return `image_url` (and do not return full prompt text).
 
 #### Save answer
 
 - Request: `POST /api/sessions/{session_id}/answer`
 - Server:
   - Validate session and that `question_id` == current question.
+  - **Validate `qtoken`** for `{session_id, current_index}` and delete it atomically (single-use).
+  - Compute response time using `teleexam:rt:{session_id}:{current_index}` and update `teleexam:behavior:{user_id}` counters.
   - Write answer into Redis `answers` dict.
   - For practice/quiz: compute correctness immediately; for exam: optionally defer correctness until submit.
   - Enforce “answer once” policy (configurable):
@@ -222,10 +301,11 @@ stateDiagram-v2
 - **Timing**: required. Enforce `deadline_ts` server-side.
 - **Explanations**: forbidden until submission.
 - **Scoring**: final score only (optionally category breakdown).
-- **Navigation**:
-  - Sequential by default.
-  - Optional “review allowed” (config): allow `prev` but still no bulk fetch; each fetch returns one question at requested index with bounds checks.
-- **Anti-scrape**: strongly recommended to return question as **image** or partially obfuscated text.
+- **Navigation (hard enforced)**:
+  - Strict sequential access: only `current_index` is accessible.
+  - Forward-only: `next` allowed; **no `prev`** and no index override.
+- **Anti-scrape (hard enforced)**:
+  - Exam questions are delivered as **image_url only** (no full text in response).
 
 #### Practice mode
 
@@ -241,18 +321,24 @@ stateDiagram-v2
 - **Explanations**: immediate after each answer (or after completion, configurable).
 - **Onboarding hook**: first completed quiz triggers referral reward credit for inviter.
 
-### 4.3 Navigation validation (required checks)
+### 4.3 Navigation validation (hard enforced checks)
 
-For any `get_question(index?)`, `next`, `prev`:
+These checks are enforced server-side for every session request.
 
-- **Bounds**: `0 <= index < len(question_ids)`
-- **Sequential enforcement**: default requires `index == current_index` for `get_question`.
-- **Answer required**: `next` requires current question answered (exam/quiz default).
-- **Deadline**: if `now > deadline_ts`, session becomes expired; only `submit` allowed (or auto-submit).
-- **Session ownership**: session user must match authenticated user (telegram_id→user_id mapping).
-- **Replay protection** (optional but recommended):
-  - Each `get_question` returns a `nonce` to be echoed in `answer`.
-  - Nonce stored in `teleexam:nonce:{session_id}:{nonce}` with TTL (e.g., 120s) and consumed on answer.
+For `GET /api/sessions/{session_id}/question`, `POST /answer`, `POST /next`, `POST /submit`:
+
+- **Strict sequential access**:
+  - `GET /question` always returns the question at `current_index`.
+  - There is no API to request an arbitrary index.
+- **Answer required**:
+  - `next` requires the current question to be answered (exam/quiz hard rule; practice optional but recommended).
+- **Deadline**:
+  - if `now > deadline_ts`, session is treated as expired; only `submit` is allowed.
+- **Session ownership**:
+  - session `user_id` must match authenticated user derived from `X-Telegram-Id`.
+- **Mandatory `qtoken` (single-use)**:
+  - `POST /answer` must include the `qtoken` issued by the most recent `GET /question`.
+  - Token is deleted after validation (prevents replay).
 
 ---
 
@@ -273,6 +359,19 @@ Backend resolves:
 
 - Admin login issues JWT (access token, optional refresh).
 - Admin endpoints require `Authorization: Bearer <jwt>` and admin role claim.
+
+### 5.1.1 Error responses (explicit contract)
+
+All errors return JSON:
+
+- `{"error": {"code": "<string>", "message": "<human readable>", "details": {...}}}`
+
+| Status | When returned | Typical codes |
+|---|---|---|
+| `403 Forbidden` | invalid/expired/missing `qtoken`; banned user; failed shared secret | `invalid_qtoken`, `banned`, `unauthorized_bot` |
+| `409 Conflict` | out-of-sync state (wrong question_id), active session already exists, illegal transition | `state_conflict`, `active_session_exists` |
+| `429 Too Many Requests` | rate limit or behavioral throttling | `rate_limited`, `throttled` |
+| `503 Service Unavailable` | Redis/DB/LLM dependency unavailable for that operation | `redis_unavailable`, `db_unavailable`, `llm_unavailable` |
 
 ### 5.2 Public API endpoints (`/api`)
 
@@ -302,12 +401,14 @@ Backend resolves:
 - `GET /api/sessions/{session_id}`
   - Returns: minimal session meta (no question_ids list).
 - `GET /api/sessions/{session_id}/question`
-  - Returns: **one question only**, at `current_index` (or strict index param if enabled).
+  - Returns: **one question only**, always at `current_index` (strict sequential access).
   - Response:
-    - `question_id`, `index`, `total`, `prompt` (text) OR `image_base64`/`image_url`
-    - `choices` (A-D), `nonce?`
+    - `question_id`, `index`, `total`
+    - `prompt` (practice/quiz) OR `image_url` (exam)
+    - `choice_a..choice_d`
+    - `qtoken` (mandatory; TTL 60–120s; single-use)
 - `POST /api/sessions/{session_id}/answer`
-  - Body: `question_id`, `answer` (A/B/C/D), `nonce?`
+  - Body: `question_id`, `answer` (A/B/C/D), `qtoken` (mandatory)
   - Returns:
     - `accepted: true`
     - `is_correct?` (practice/quiz)
@@ -332,7 +433,111 @@ Backend resolves:
   - Body: `course_id`, `time_horizon_days`, `constraints?`
   - Returns: structured study plan (JSON) and narrative.
 
-### 5.3 Admin API endpoints (`/admin`)
+### 5.3 Pydantic request/response schemas (canonical contracts)
+
+All schemas are Pydantic v2. The Telegram bot should treat these as the stable integration contract.
+
+```python
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+
+SessionMode = Literal["exam", "practice", "quiz"]
+
+
+class UserUpsertRequest(BaseModel):
+    telegram_id: int
+    telegram_username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    ref_code: UUID | None = None
+
+
+class UserResponse(BaseModel):
+    user_id: UUID
+    telegram_id: int
+    invite_code: UUID
+    invite_count: int
+    is_pro: bool
+    plan_expiry: datetime | None = None
+
+
+class StartSessionRequest(BaseModel):
+    mode: SessionMode
+    course_id: UUID | None = None
+    topic_id: UUID | None = None
+    exam_template_id: UUID | None = None
+    question_count: int | None = Field(default=None, ge=5, le=10)  # quiz only
+
+
+class StartSessionResponse(BaseModel):
+    session_id: UUID
+    mode: SessionMode
+    status: Literal["in_progress"]
+    question_count: int
+    ttl_seconds: int
+    deadline_ts: int | None = None
+
+
+class QuestionPayload(BaseModel):
+    question_id: UUID
+    index: int
+    total: int
+    prompt: str | None = None
+    image_url: str | None = None  # exam mode: required; practice/quiz: usually null
+    choice_a: str
+    choice_b: str
+    choice_c: str
+    choice_d: str
+    qtoken: str  # mandatory; short-lived; single-use
+
+
+class GetQuestionResponse(BaseModel):
+    session_id: UUID
+    question: QuestionPayload
+
+
+class SubmitAnswerRequest(BaseModel):
+    question_id: UUID
+    answer: Literal["A", "B", "C", "D"]
+    qtoken: str
+
+
+class SubmitAnswerResponse(BaseModel):
+    accepted: bool = True
+    is_correct: bool | None = None  # practice/quiz only
+    explanation: str | None = None  # practice/quiz only
+
+
+class NextResponse(BaseModel):
+    session_id: UUID
+    index: int
+
+
+class SubmitSessionResponse(BaseModel):
+    session_id: UUID
+    mode: SessionMode
+    question_count: int
+    correct_count: int
+    wrong_count: int
+    score_percent: float
+    submitted_at: datetime
+    per_topic_breakdown: list[dict] | None = None
+```
+
+**Contract invariants (enforced by backend):**
+
+- `GET /api/sessions/{session_id}/question` returns **exactly one question** and never the full question list.
+- `POST /api/sessions/{session_id}/answer` must match the **current question** for the session; otherwise return `409 Conflict`.
+- Exam mode never returns `explanation` until after submission.
+ - `qtoken` is mandatory and single-use; missing/invalid/expired token returns `403 Forbidden` (or `409` if out-of-sync).
+
+### 5.4 Admin API endpoints (`/admin`)
 
 - `POST /admin/auth/login`
   - Body: `email`, `password`
@@ -719,16 +924,32 @@ Enforce in service layer + dependency:
 
 - **Randomized order per session**:
   - Deterministic shuffle using session `seed` to support audits.
-- **Optional image rendering**:
-  - For exam mode, return `image_url` (short-lived signed URL) or base64.
-  - Prevents easy text scraping and copy/paste in Telegram.
-- **Replay attack prevention**:
-  - Nonce-per-question as described in 4.3.
-  - Nonce consumed once.
+- **Image rendering (exam mode: mandatory)**:
+  - Exam mode must return `image_url` (short-lived signed URL) and not full text.
+  - Watermark overlay recommended:
+    - `telegram_id`, `session_id`, `index`, timestamp (light opacity).
+- **Replay attack prevention (mandatory)**:
+  - `qtoken` (Section 3/4/5) is single-use and expires in 60–120s.
+  - Prevents replays and “bot answering” from a captured payload.
+- **Lazy loading / no question list exposure (mandatory)**:
+  - Backend never returns the full session `question_ids` list.
+  - Acceptable implementation patterns:
+    - Store only minimal UUIDs in Redis (`question_ids`) and never expose them, or
+    - Store `{exam_template_id, seed}` and derive question IDs server-side deterministically.
+- **Behavioral anti-bot detection (mandatory)**:
+  - Track per-user and per-session timings in Redis:
+    - time from serve→answer, invalid token rate, request bursts.
+  - Suspicion rules (example defaults):
+    - answer time < 1.0s on ≥3 questions in a session → `suspected_bot`
+    - invalid/expired qtoken > 5/min → throttle
+  - Mitigations (server-side):
+    - throttle: return `429` and increase per-route rate limit strictness
+    - temporary block: `403` for 15–60 minutes (`teleexam:flag:{user_id}=blocked`)
+    - admin flag: log `activity_logs` event `bot_suspected` with counters
 - **Abuse signals**:
   - Log suspicious patterns:
     - Too-fast answering times.
-    - Excessive retries/invalid nonces.
+    - Excessive retries/invalid/expired `qtoken`.
     - High question view without answers.
   - Admin can flag/ban users via `users.is_banned`.
 
@@ -740,7 +961,7 @@ Enforce in service layer + dependency:
 
 - **Explain answer**:
   - For practice/quiz immediately after answer.
-  - For exam only after submission (or explicit review endpoint with gating).
+  - For exam only after submission (hard enforced; see Section 1.3).
 - **Tutor mode**:
   - Multi-turn chat; uses thread memory stored in Redis (short-term) and optional Postgres if needed later.
 - **Study plan generator**:
@@ -758,6 +979,15 @@ Enforce in service layer + dependency:
   - correct choice (when allowed)
   - user answer
   - explanation style constraints (concise, stepwise, exam-aligned)
+
+### 11.4 AI access control enforcement (hard rules)
+
+- `/api/ai/explain` must validate one of:
+  - request is for practice/quiz mode, or
+  - request is tied to an **exam result** (`exam_results.id`) / completed session
+- If user attempts exam explanation during an active exam session:
+  - return `403 Forbidden` with code `exam_explain_blocked`
+- The backend must not rely on the bot to enforce this; enforcement is server-side only.
 
 ### 11.3 LangGraph node design (implementation-level)
 
@@ -905,7 +1135,7 @@ For each ingest run:
 - **Redis as hot path**:
   - session reads/writes
   - rate limits / quotas
-  - locks/nonces
+  - locks/qtokens
 - **Minimal DB writes**:
   - Write on session submit only (results + analytics facts).
   - Append-only `activity_logs` can be sampled or batched if needed.
@@ -942,10 +1172,10 @@ sequenceDiagram
     Bot->>API: GET /api/sessions/{sid}/question
     API->>R: GET session + validate index/deadline
     API->>PG: GET question payload (cacheable)
-    API-->>Bot: single question (text or image) + nonce
+    API-->>Bot: single question (text or image) + qtoken
 
     Bot->>API: POST /api/sessions/{sid}/answer
-    API->>R: Lua validate+write answer (consume nonce)
+    API->>R: Lua validate+write answer (consume qtoken)
     API-->>Bot: accepted
 
     Bot->>API: POST /api/sessions/{sid}/next
@@ -1010,3 +1240,184 @@ sequenceDiagram
   API->>PG: if first_quiz_completed=false: set true; increment inviter.invite_count
   API-->>Bot: quiz summary
 ```
+
+---
+
+## 16. Telegram Bot Interaction Model (Telegram-first UX + Error Handling)
+
+This section defines the bot ↔ backend contract at the conversational level. The bot is the UX layer; the backend is the policy engine.
+
+### 16.1 Deep link invite logic
+
+- Bot receives `/start?ref=<invite_code>`.
+- Bot calls `POST /api/users/upsert` with `ref_code`.
+- Bot should display:
+  - confirmation message (“Invite tracked”),
+  - value proposition (“Complete your first quiz to reward your inviter”).
+
+**Hard rules**:
+
+- Bot must pass `X-Telegram-Id` on every request.
+- Bot must not “credit” invites locally; backend is source of truth.
+
+### 16.2 Exam session flow (chat UX)
+
+Recommended chat states:
+
+- **Idle**: show menu (Start Exam / Practice / Quiz / My Stats / Invite Friends)
+- **In session**: only allow answer buttons and “Next”
+- **On submit**: show final score + next actions
+
+Bot call sequence (exam):
+
+1. `POST /api/sessions/start` (mode=exam) → store `session_id` locally
+2. Loop:
+   - `GET /api/sessions/{sid}/question`
+   - render image + 4 inline buttons (A/B/C/D)
+   - capture `qtoken` returned by the backend
+   - on tap: `POST /api/sessions/{sid}/answer` (must include `qtoken`)
+   - then `POST /api/sessions/{sid}/next`
+3. Final: `POST /api/sessions/{sid}/submit`
+
+**Bot-side input validation**:
+
+- If user types arbitrary text, bot replies “Use the buttons (A–D)”.
+- If API returns `409`, bot should refresh question (`GET /question`) and re-render (the user is out of sync).
+- If API returns `403` for invalid/expired `qtoken`, bot must:
+  - immediately refetch the current question (`GET /question`) to obtain a new `qtoken`,
+  - re-render the question and buttons.
+
+### 16.3 Quiz mode flow (onboarding + referral reward trigger)
+
+- Start quiz → short session
+- After each answer, show correctness + short explanation (static or AI based on plan)
+- On completion, show score and encourage invite sharing
+
+### 16.4 Timeout and retry behavior
+
+- If `GET /question` returns `404` (session missing / TTL expired):
+  - Bot should display: “Session expired. Start again.” and clear local `session_id`.
+- If `submit` returns `409` (already submitted):
+  - Bot should show the returned final summary and clear local `session_id`.
+- Network retries:
+  - Bot retries idempotent GETs with exponential backoff.
+  - For POSTs, bot should pass an idempotency token header `X-Idempotency-Key` (recommended) to avoid duplicate submissions.
+
+---
+
+## 17. Failure Handling & Degraded Mode (Redis/DB/LLM)
+
+### 17.1 Redis failure
+
+Redis is the source of truth for active sessions; if Redis is unavailable:
+
+- **Sessions**:
+  - Reject `start`, `question`, `answer`, `next`, `submit` with `503 Service Unavailable`.
+  - Do not attempt to “fall back” to Postgres for in-progress sessions (forbidden by design).
+- **AI**:
+  - Tutor thread memory may degrade; allow stateless tutor calls only if explicitly enabled.
+- **Admin**:
+  - Admin queries may still work if Postgres is healthy; keep separate failure domains.
+
+### 17.2 Postgres failure
+
+- `start_session` can still work if questions are cached; otherwise return `503`.
+- `submit_session` must either:
+  - **fail fast** with `503` (preferred) and keep Redis session alive for retry, or
+  - queue submit for later (only if a durable queue is introduced; not required here).
+
+**Submit recovery** (required):
+
+- Keep a short-lived Redis submit snapshot:
+  - `teleexam:submit_snapshot:{session_id}` TTL 10–30 minutes
+- On `submit` retry, use snapshot to recompute/persist without requiring user to re-answer.
+
+### 17.3 Groq/LLM failure
+
+- Practice/quiz explanations:
+  - Prefer `questions.explanation_static` when available.
+  - If LLM fails, return:
+    - a deterministic fallback message (“Explanation temporarily unavailable”)
+    - correctness only.
+- Tutor:
+  - Return `503` with user-friendly message in bot UI.
+
+### 17.4 Partial session recovery policy
+
+- If session TTL expires, session is unrecoverable by default.
+- Optional “grace TTL”:
+  - Extend TTL on activity; never extend past exam deadline.
+  - Store `deadline_ts` and enforce it even if TTL is longer.
+
+---
+
+## 18. Security (Input Validation, Abuse Prevention, Secure Invites)
+
+### 18.1 Input validation
+
+- Validate all UUIDs, enum values (`mode`, answer choices), and numeric bounds (`question_count`).
+- Enforce maximum payload sizes (body length limits).
+- Reject invalid state transitions with `409 Conflict`.
+
+### 18.2 Abuse prevention (anti-spam / anti-scraping)
+
+- Redis sliding-window rate limits per:
+  - user_id + route
+  - telegram_id + route
+  - IP + route (if applicable)
+- Block patterns:
+  - repeated invalid `session_id`
+  - excessive `get_question` without answers
+  - `qtoken` reuse attempts
+- Moderation tools:
+  - `users.is_banned` and `ban_reason`
+  - admin endpoint to ban/unban
+
+### 18.3 Secure invite system rules
+
+- `ref_code` accepted only on **first user creation**.
+- Never allow changing `invited_by_user_id` after creation.
+- Reward credit is server-side only and idempotent (via `referral_reward_state`).
+
+---
+
+## 19. Deployment Design (Free-tier Strategy, Docker, Environment)
+
+### 19.1 Free-tier deployment strategy (practical baseline)
+
+Target: 1000+ concurrent users with minimal DB load.
+
+- Run 1–2 FastAPI instances (async) behind a single reverse proxy.
+- Use a small managed Postgres.
+- Use a small Redis instance; memory sizing driven by concurrent sessions + rate limit keys.
+
+### 19.2 Docker setup (runtime model)
+
+- `Dockerfile` builds one image.
+- Run services:
+  - `api` (FastAPI)
+  - `redis`
+  - `postgres` (local dev) / managed in prod
+
+### 19.3 Environment configuration (required variables)
+
+- **Core**:
+  - `APP_ENV`, `LOG_LEVEL`
+  - `POSTGRES_DSN`
+  - `REDIS_URL`
+- **Telegram auth**:
+  - `TELEGRAM_SHARED_SECRET` (or HMAC signing key)
+- **Admin auth**:
+  - `ADMIN_JWT_SECRET`, `ADMIN_JWT_TTL_SECONDS`
+- **AI**:
+  - `GROQ_API_KEY`, `GROQ_MODEL`
+- **Rate limit / quota policy**:
+  - window sizes and thresholds (per route)
+
+### 19.4 Observability (minimum)
+
+- Structured JSON logs with:
+  - request_id, user_id, telegram_id, route, latency_ms, status_code
+- Metrics (Prometheus-style or hosted):
+  - request rate, p95 latency, 429 count, Redis errors, DB errors, active sessions
+
