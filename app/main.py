@@ -6,7 +6,21 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import api_router
 from app.core.config import settings
-from app.core.middleware import TelegramAuthContextMiddleware
+from app.core.middleware import RequestIdMiddleware, BotAuthMiddleware, request_id_context, telegram_id_context
+from app.db.redis import init_redis, close_redis
+
+
+def add_context_vars_to_log_processor(_, __, event_dict):
+    """
+    Structlog processor to add request_id and telegram_id from ContextVars to log records.
+    """
+    request_id = request_id_context.get()
+    if request_id:
+        event_dict["request_id"] = request_id
+    telegram_id = telegram_id_context.get()
+    if telegram_id:
+        event_dict["telegram_id"] = telegram_id
+    return event_dict
 
 
 def _configure_logging() -> None:
@@ -16,6 +30,7 @@ def _configure_logging() -> None:
         processors=[
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.add_log_level,
+            add_context_vars_to_log_processor,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
@@ -26,13 +41,18 @@ def _configure_logging() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _configure_logging()
+    await init_redis() # Initialize Redis
     yield
+    await close_redis() # Close Redis connection
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="TeleExam AI Backend", version="0.1.0", lifespan=lifespan)
 
-    app.add_middleware(TelegramAuthContextMiddleware)
+    # Add new middlewares
+    app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(BotAuthMiddleware)
+    # Removed app.add_middleware(TelegramAuthContextMiddleware)
 
     app.add_middleware(
         CORSMiddleware,
