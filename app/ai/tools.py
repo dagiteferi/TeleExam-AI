@@ -4,7 +4,6 @@ from typing import Any
 from uuid import UUID
 
 from langchain_core.tools import tool
-from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import select
 
 from app.db.postgres import db_conn
@@ -14,7 +13,7 @@ from app.models.topic import Topic
 
 
 @tool
-async def get_question_details(question_id: UUID, conn: AsyncConnection) -> dict[str, Any]:
+async def get_question_details(question_id: UUID) -> dict[str, Any]:
     """
     Retrieves details of a specific question by its ID.
     """
@@ -34,7 +33,7 @@ async def get_question_details(question_id: UUID, conn: AsyncConnection) -> dict
         return {}
 
 @tool
-async def get_user_weak_topics(user_id: UUID, conn: AsyncConnection) -> list[dict[str, Any]]:
+async def get_user_weak_topics(user_id: UUID) -> list[dict[str, Any]]:
     """
     Retrieves a list of topics where the user has made the most errors.
     """

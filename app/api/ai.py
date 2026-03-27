@@ -13,7 +13,7 @@ router = APIRouter(prefix="/ai")
 async def explain_question(
     request: ExplainRequest,
     conn: DbConn,
-    _current_telegram_id: int = CurrentTelegramId,
+    _current_telegram_id: CurrentTelegramId,
 ) -> ExplainResponse:
     return await AiService().explain_question(
         conn, _current_telegram_id, request.question_id, request.user_answer
@@ -24,7 +24,7 @@ async def explain_question(
 async def chat_interaction(
     request: ChatRequest,
     conn: DbConn,
-    _current_telegram_id: int = CurrentTelegramId,
+    _current_telegram_id: CurrentTelegramId,
 ) -> ChatResponse:
     return await AiService().chat(conn, _current_telegram_id, request.message)
 
@@ -33,6 +33,6 @@ async def chat_interaction(
 async def create_study_plan(
     request: StudyPlanRequest,
     conn: DbConn,
-    _current_telegram_id: int = CurrentTelegramId,
+    _current_telegram_id: CurrentTelegramId,
 ) -> StudyPlanResponse:
     return await AiService().generate_study_plan(conn, _current_telegram_id)
