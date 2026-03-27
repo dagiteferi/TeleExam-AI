@@ -3,11 +3,15 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import Depends, Request, HTTPException, status
+from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncConnection
 from redis.asyncio import Redis
 
 from app.db.postgres import db_conn
 from app.db.redis import get_redis_client as get_initialized_redis_client # Renamed to avoid conflict
+
+telegram_secret_header = APIKeyHeader(name="X-Telegram-Secret", auto_error=False, scheme_name="TelegramSecret")
+telegram_id_header = APIKeyHeader(name="X-Telegram-Id", auto_error=False, scheme_name="TelegramId")
 
 
 async def get_current_telegram_id(request: Request) -> int:

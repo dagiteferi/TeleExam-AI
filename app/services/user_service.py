@@ -23,19 +23,22 @@ class UserService:
             # Update existing user
             update_data = user_data.model_dump(exclude_unset=True, exclude={'ref_code'})
             if update_data:
-                user = await conn.scalar(
-                    update(User).where(User.telegram_id == telegram_id).values(**update_data).returning(User)
+                await conn.execute(
+                    update(User).where(User.telegram_id == telegram_id).values(**update_data)
                 )
-            else:
-                user = existing_user
         else:
             # Create new user
             insert_data = user_data.model_dump(exclude={'ref_code'})
-            user = await conn.scalar(insert(User).values(**insert_data).returning(User))
+            new_user_id = await conn.scalar(insert(User).values(**insert_data).returning(User.id))
             
             # Process referral ONLY for NEW users
             if user_data.ref_code:
-                await referral_service.process_referral_on_user_upsert(conn, user.id, user_data.ref_code)
+                await referral_service.process_referral_on_user_upsert(conn, new_user_id, user_data.ref_code)
+        
+        # ALWAYS fetch the final record as a SQLAlchemy Row
+        # Note: SQLAlchemy Rows support dot-notation access (e.g., user.id)
+        result = await conn.execute(select(User).where(User.telegram_id == telegram_id))
+        user_to_return = result.one()
 
         await conn.commit()
-        return user
+        return user_to_return
