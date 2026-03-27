@@ -26,7 +26,6 @@ def create_agent(llm: ChatGroq, tools: list, system_message: str):
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_message),
         MessagesPlaceholder(variable_name="messages"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
     return prompt | llm.bind_tools(tools)
 
@@ -52,7 +51,7 @@ class AiGraph:
                 return END
             return "tools"
 
-        workflow.add_conditional_edge("agent", should_continue)
+        workflow.add_conditional_edges("agent", should_continue)
         workflow.add_edge("tools", "agent")
 
         return workflow.compile()

@@ -3,6 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage
+from sqlalchemy import select
+from app.models.user import User
 from app.ai.graph import AiGraph
 from app.ai.tools import get_question_details, get_user_weak_topics
 from app.schemas.ai import ExplainResponse, ChatResponse, StudyPlanResponse, StudyPlanDetails, StudyPlanTopic
@@ -19,7 +21,7 @@ class AiService:
         question_id: UUID,
         user_answer: str | None,
     ) -> ExplainResponse:
-        question_details = await get_question_details.ainvoke({"question_id": question_id, "conn": conn})
+        question_details = await get_question_details.ainvoke({"question_id": question_id})
         if not question_details:
             return ExplainResponse(success=False, explanation="Question not found.")
 
@@ -61,7 +63,12 @@ class AiService:
         conn: AsyncConnection,
         telegram_id: int,
     ) -> StudyPlanResponse:
-        weak_topics_data = await get_user_weak_topics.ainvoke({"user_id": telegram_id, "conn": conn})
+        # Fetch user UUID from telegram_id
+        user_id = await conn.scalar(select(User.id).where(User.telegram_id == telegram_id))
+        if not user_id:
+            return StudyPlanResponse(success=False, study_plan=StudyPlanDetails(title="User not found", duration_days=0, topics=[]))
+
+        weak_topics_data = await get_user_weak_topics.ainvoke({"user_id": user_id})
         weak_topics_names = [topic["topic_name"] for topic in weak_topics_data]
 
         prompt_message = f"Generate a study plan for the following weak topics: {', '.join(weak_topics_names)}. The user wants to study for 7 days."

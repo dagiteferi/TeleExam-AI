@@ -283,6 +283,7 @@ class SessionService:
             mode=request.mode,
             status="in_progress",
             question_count=total_questions,
+            ttl_seconds=session_ttl_seconds,
             deadline_ts=int(deadline_ts) if deadline_ts else None,
         )
 
