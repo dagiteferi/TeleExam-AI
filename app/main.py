@@ -61,7 +61,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    from app.api.render import router as render_router
     app.include_router(api_router)
+    app.include_router(render_router, prefix="/api", tags=["render"])
     app.include_router(admin_auth_router, prefix="/admin", tags=["Admin Auth"])
     app.include_router(admin_users_router, prefix="/admin", tags=["Admin Users"])
     app.include_router(admin_stats_router, prefix="/admin", tags=["Admin Stats"])

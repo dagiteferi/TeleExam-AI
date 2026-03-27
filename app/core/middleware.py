@@ -40,7 +40,7 @@ class BotAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        if request.url.path in ["/docs", "/openapi.json", "/metrics"] or request.url.path.startswith("/admin"):
+        if request.url.path in ["/docs", "/openapi.json", "/metrics"] or request.url.path.startswith("/admin") or request.url.path.startswith("/api/v1/render"):
             return await call_next(request)
 
         telegram_secret = request.headers.get("X-Telegram-Secret")
@@ -90,7 +90,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        if request.url.path in ["/docs", "/openapi.json", "/metrics"] or request.url.path.startswith("/admin"):
+        if request.url.path in ["/docs", "/openapi.json", "/metrics"] or request.url.path.startswith("/admin") or request.url.path.startswith("/api/v1/render"):
             return await call_next(request)
 
         telegram_id = getattr(request.state, "telegram_id", None)

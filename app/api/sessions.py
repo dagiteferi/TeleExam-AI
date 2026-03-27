@@ -53,9 +53,8 @@ async def get_session_metadata(
     conn: Annotated[AsyncConnection, Depends(get_db_conn)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> dict:
-    # This endpoint should return minimal session metadata, not full question list
-    # For now, just return a placeholder
-    return {"session_id": session_id, "status": "in_progress", "message": "Session metadata endpoint not fully implemented yet."}
+    # Fetch real metadata from Redis via SessionService
+    return await SessionService(redis).get_session_metadata(session_id, telegram_id)
 
 
 @router.get("/{session_id}/question", response_model=GetQuestionResponse)

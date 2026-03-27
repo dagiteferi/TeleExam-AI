@@ -39,6 +39,14 @@ async def get_db_conn(
         yield conn
 
 
+async def get_public_db_conn() -> AsyncConnection:
+    """
+    Provides a public database connection (no RLS context).
+    """
+    async with db_conn(telegram_id=None) as conn:
+        yield conn
+
+
 async def get_redis(
     redis_client: Annotated[Redis, Depends(get_initialized_redis_client)]
 ) -> Redis:
