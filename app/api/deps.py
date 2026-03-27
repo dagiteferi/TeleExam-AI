@@ -42,3 +42,7 @@ async def get_redis(
     Provides an asynchronous Redis client.
     """
     return redis_client
+
+
+CurrentTelegramId = Annotated[int, Depends(get_current_telegram_id)]
+DbConn = Annotated[AsyncConnection, Depends(get_db_conn)]

@@ -22,7 +22,7 @@ class Question(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id"), nullable=False)
     topic_id = Column(UUID(as_uuid=True), ForeignKey("topics.id"), nullable=False)
-    format = Column(Enum(QuestionFormat), nullable=False, default=QuestionFormat.mcq)
+    format = Column(Enum(enum_class=QuestionFormat, name='question_format_enum'), nullable=False, default=QuestionFormat.mcq)
 
     prompt = Column(Text, nullable=False)
     choice_a = Column(Text, nullable=False)
