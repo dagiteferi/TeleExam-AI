@@ -16,7 +16,7 @@ async def explain_question(
     _current_telegram_id: int = CurrentTelegramId,
 ) -> ExplainResponse:
     return await AiService().explain_question(
-        conn, request.telegram_id, request.question_id, request.user_answer
+        conn, _current_telegram_id, request.question_id, request.user_answer
     )
 
 
@@ -26,7 +26,7 @@ async def chat_interaction(
     conn: DbConn,
     _current_telegram_id: int = CurrentTelegramId,
 ) -> ChatResponse:
-    return await AiService().chat(conn, request.telegram_id, request.message)
+    return await AiService().chat(conn, _current_telegram_id, request.message)
 
 
 @router.post("/study-plan", response_model=StudyPlanResponse)
@@ -35,4 +35,4 @@ async def create_study_plan(
     conn: DbConn,
     _current_telegram_id: int = CurrentTelegramId,
 ) -> StudyPlanResponse:
-    return await AiService().generate_study_plan(conn, request.telegram_id)
+    return await AiService().generate_study_plan(conn, _current_telegram_id)

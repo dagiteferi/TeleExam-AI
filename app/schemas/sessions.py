@@ -12,8 +12,10 @@ SessionMode = Literal["exam", "practice", "quiz"]
 
 class StartSessionRequest(BaseModel):
     mode: SessionMode
+    department_id: UUID | None = None
     course_id: UUID | None = None
     topic_id: UUID | None = None
+    past_exam_id: UUID | None = None
     exam_template_id: UUID | None = None
     question_count: int | None = Field(default=None, ge=5, le=10)  # quiz only
 

@@ -16,36 +16,26 @@ class UserService:
         result = await conn.execute(stmt)
         existing_user = result.scalar_one_or_none()
 
+        from app.services.referral_service import ReferralService
+        referral_service = ReferralService()
+        
         if existing_user:
             # Update existing user
-            update_data = user_data.model_dump(exclude_unset=True)
-            if 'ref_code' in update_data:
-                del update_data['ref_code'] # ref_code is only for initial creation
-
+            update_data = user_data.model_dump(exclude_unset=True, exclude={'ref_code'})
             if update_data:
-                stmt = update(User).where(User.telegram_id == telegram_id).values(**update_data).returning(User)
-                result = await conn.execute(stmt)
-                user = result.scalar_one()
+                user = await conn.scalar(
+                    update(User).where(User.telegram_id == telegram_id).values(**update_data).returning(User)
+                )
             else:
                 user = existing_user
         else:
             # Create new user
-            insert_data = user_data.model_dump()
-            if insert_data.get('ref_code'):
-                # Logic to find invited_by_user_id from ref_code
-                # For now, let's assume ref_code is directly the invited_by_user_id for simplicity or handle it later
-                # This part needs to be properly implemented based on referral system design
-                # For now, we'll just pass it if it's a valid UUID, otherwise ignore
-                try:
-                    invited_by_uuid = uuid.UUID(str(insert_data['ref_code']))
-                    insert_data['invited_by_user_id'] = invited_by_uuid
-                except ValueError:
-                    pass # Invalid ref_code, ignore
-                del insert_data['ref_code']
-
-            stmt = insert(User).values(**insert_data).returning(User)
-            result = await conn.execute(stmt)
-            user = result.scalar_one()
+            insert_data = user_data.model_dump(exclude={'ref_code'})
+            user = await conn.scalar(insert(User).values(**insert_data).returning(User))
+            
+            # Process referral ONLY for NEW users
+            if user_data.ref_code:
+                await referral_service.process_referral_on_user_upsert(conn, user.id, user_data.ref_code)
 
         await conn.commit()
         return user
