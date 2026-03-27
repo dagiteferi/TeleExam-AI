@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text, func, select, Integer
 
 from app.admin.deps import require_admin
-from app.db.postgres import get_db_conn as db_conn
+from app.db.postgres import db_conn
 from app.models.activity_log import ActivityLog
 from app.models.user import User
 from app.models.exam_result import ExamResult
@@ -15,13 +15,17 @@ from app.models.question import Question
 from app.models.user_answer import UserAnswer
 from app.schemas.admin import DAUResponse, ReferralStatsResponse, ExamStatsResponse, QuestionStatsResponse
 
-router = APIRouter(prefix="/stats")
+async def get_admin_db():
+    async with db_conn(telegram_id=None) as conn:
+        yield conn
+
+router = APIRouter(prefix="/stats", dependencies=[Depends(require_admin)])
 
 @router.get("/dau", response_model=DAUResponse)
 async def get_daily_active_users(
     start_date: date,
     end_date: date,
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
 ) -> DAUResponse:
     query = text("""
         SELECT date_trunc('day', created_at) AS day, COUNT(DISTINCT user_id) AS dau
@@ -36,7 +40,7 @@ async def get_daily_active_users(
 
 @router.get("/referrals", response_model=ReferralStatsResponse)
 async def get_referral_stats(
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
     limit: int = 10,
     offset: int = 0,
 ) -> ReferralStatsResponse:
@@ -47,7 +51,7 @@ async def get_referral_stats(
 
 @router.get("/exams", response_model=ExamStatsResponse)
 async def get_exam_stats(
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> ExamStatsResponse:
@@ -73,7 +77,7 @@ async def get_exam_stats(
 
 @router.get("/questions", response_model=list[QuestionStatsResponse])
 async def get_question_stats(
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
     course_id: UUID | None = None,
     topic_id: UUID | None = None,
     limit: int = 100,

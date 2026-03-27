@@ -32,8 +32,9 @@ async def start_session(
     conn: Annotated[AsyncConnection, Depends(get_db_conn)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> StartSessionResponse:
-    # Get user_id from telegram_id
-    user = await conn.scalar(select(User).where(User.telegram_id == telegram_id))
+    # Get user from database
+    result = await conn.execute(select(User).where(User.telegram_id == telegram_id))
+    user = result.one_or_none()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

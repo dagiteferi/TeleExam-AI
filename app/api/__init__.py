@@ -1,5 +1,6 @@
 from __future__ import annotations
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from app.api.deps import telegram_secret_header, telegram_id_header
 from app.api.user import router as user_router
 # from app.api.session import router as session_router # Removed
 # from app.api.exam import router as exam_router # Removed
@@ -7,7 +8,10 @@ from app.api.sessions import router as sessions_router # Added
 from app.api.results import router as results_router
 from app.api.ai import router as ai_router
 
-api_router = APIRouter(prefix="/api")
+api_router = APIRouter(
+    prefix="/api",
+    dependencies=[Depends(telegram_secret_header), Depends(telegram_id_header)]
+)
 api_router.include_router(user_router, tags=["users"])
 # api_router.include_router(session_router, tags=["session"]) # Removed
 # api_router.include_router(exam_router, tags=["exam"]) # Removed

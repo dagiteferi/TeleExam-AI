@@ -14,9 +14,13 @@ from app.schemas.admin import TokenData
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/admin/auth/login")
 
+async def get_admin_db():
+    async with db_conn(telegram_id=None) as conn:
+        yield conn
+
 async def get_admin_user(
     token: str = Depends(oauth2_scheme),
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
 ) -> AdminUser:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -32,7 +36,8 @@ async def get_admin_user(
     except (JWTError, ValidationError):
         raise credentials_exception
     
-    admin_user = await conn.scalar(select(AdminUser).where(AdminUser.email == token_data.email))
+    result = await conn.execute(select(AdminUser).where(AdminUser.email == token_data.email))
+    admin_user = result.one_or_none()
     if admin_user is None:
         raise credentials_exception
     return admin_user
