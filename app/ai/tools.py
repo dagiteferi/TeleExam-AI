@@ -15,6 +15,9 @@ from app.models.topic import Topic
 
 @tool
 async def get_question_details(question_id: UUID, conn: AsyncConnection) -> dict[str, Any]:
+    """
+    Retrieves details of a specific question by its ID.
+    """
     async with db_conn(telegram_id=None) as conn:
         question = await conn.scalar(select(Question).where(Question.id == question_id))
         if question:
@@ -32,6 +35,9 @@ async def get_question_details(question_id: UUID, conn: AsyncConnection) -> dict
 
 @tool
 async def get_user_weak_topics(user_id: UUID, conn: AsyncConnection) -> list[dict[str, Any]]:
+    """
+    Retrieves a list of topics where the user has made the most errors.
+    """
     async with db_conn(telegram_id=None) as conn:
         query = select(
             UserTopicError.topic_id,

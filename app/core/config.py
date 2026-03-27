@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     telegram_webhook_secret: str
     groq_api_key: str
+    groq_model: str
     environment: str = "development"
     sqlalchemy_database_url: str
     cors_allow_origins: list[str] = ["*"]
