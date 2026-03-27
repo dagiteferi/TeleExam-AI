@@ -1,21 +1,21 @@
-from __future__ import annotations
-
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import text, func, select
+from sqlalchemy import text, func, select, Integer
 
 from app.admin.deps import require_admin
-from app.db.postgres import db_conn
+from app.db.postgres import get_db_conn as db_conn
 from app.models.activity_log import ActivityLog
 from app.models.user import User
 from app.models.exam_result import ExamResult
+from app.models.question import Question
+from app.models.user_answer import UserAnswer
 from app.schemas.admin import DAUResponse, ReferralStatsResponse, ExamStatsResponse, QuestionStatsResponse
 
-router = APIRouter(prefix="/stats", dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/stats")
 
 @router.get("/dau", response_model=DAUResponse)
 async def get_daily_active_users(
@@ -24,9 +24,9 @@ async def get_daily_active_users(
     conn: AsyncConnection = Depends(db_conn),
 ) -> DAUResponse:
     query = text("""
-        SELECT date_trunc('day', event_ts) AS day, COUNT(DISTINCT user_id) AS dau
+        SELECT date_trunc('day', created_at) AS day, COUNT(DISTINCT user_id) AS dau
         FROM activity_logs
-        WHERE event_ts >= :start_date AND event_ts < :end_date + INTERVAL '1 day' AND user_id IS NOT NULL
+        WHERE created_at >= :start_date AND created_at < :end_date + INTERVAL '1 day'
         GROUP BY 1
         ORDER BY 1
     """)
@@ -79,4 +79,25 @@ async def get_question_stats(
     limit: int = 100,
     offset: int = 0,
 ) -> list[QuestionStatsResponse]:
-    return []
+    query = select(
+        Question.id.label("question_id"),
+        func.count(UserAnswer.id).label("attempt_count"),
+        func.sum(func.cast(UserAnswer.is_correct, Integer)).label("correct_count"),
+    ).join(UserAnswer, Question.id == UserAnswer.question_id).group_by(Question.id).limit(limit).offset(offset)
+    
+    if course_id:
+        query = query.where(Question.course_id == course_id)
+    if topic_id:
+        query = query.where(Question.topic_id == topic_id)
+
+    result = await conn.execute(query)
+    stats = []
+    for row in result:
+        correct = row.correct_count or 0
+        total = row.attempt_count or 1
+        stats.append(QuestionStatsResponse(
+            question_id=row.question_id,
+            attempt_count=total,
+            correct_rate=round(correct / total, 2)
+        ))
+    return stats

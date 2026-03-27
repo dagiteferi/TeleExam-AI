@@ -6,8 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class ExplainRequest(BaseModel):
-    telegram_id: int
-    question_id: UUID # Changed to UUID
+    question_id: UUID
     user_answer: str | None = None
 
 
@@ -19,7 +18,6 @@ class ExplainResponse(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    telegram_id: int
     message: str
 
 
@@ -40,7 +38,7 @@ class StudyPlanDetails(BaseModel):
 
 
 class StudyPlanRequest(BaseModel):
-    telegram_id: int
+    pass
 
 
 class StudyPlanResponse(BaseModel):
