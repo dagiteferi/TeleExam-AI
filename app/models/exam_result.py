@@ -26,7 +26,7 @@ class ExamResult(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id"), nullable=False)
-    mode = Column(Enum(SessionMode), nullable=False)
+    mode = Column(Enum(enum_class=SessionMode, name='session_mode_enum'), nullable=False)
     exam_template_id = Column(UUID(as_uuid=True), ForeignKey("exam_templates.id"), nullable=True)
     topic_id = Column(UUID(as_uuid=True), ForeignKey("topics.id"), nullable=True)
 
