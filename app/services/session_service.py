@@ -45,6 +45,12 @@ class SessionService:
     def __init__(self, redis_client: Redis):
         self.redis = redis_client
 
+    def _armor_text(self, text: str) -> str:
+        """Injects zero-width space between every character to hinder scraping."""
+        if not text:
+            return ""
+        return "\u200b".join(list(text))
+
     async def start_session(
         self,
         conn: AsyncConnection,
@@ -87,39 +93,61 @@ class SessionService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={"error": {"code": "missing_course_id", "message": "course_id is required for exam mode"}},
                 )
-            exam_template = await conn.scalar(
-                select(ExamTemplate).where(
-                    ExamTemplate.course_id == request.course_id, ExamTemplate.mode == "exam", ExamTemplate.is_active == True
-                )
-            )
-            if not exam_template:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={"error": {"code": "exam_template_not_found", "message": "No active exam template found for the given course."}},
-                )
-            
-            # Fetch questions based on exam template topics and weights
-            # For simplicity, let's fetch all questions for the course for now
-            # TODO: Implement weighted question selection based on ExamTemplateTopic
-            questions = await conn.scalars(
-                select(Question.id).where(Question.course_id == request.course_id, Question.is_active == True)
-            )
-            question_ids = questions.all()
-            total_questions = len(question_ids)
-            if total_questions < exam_template.question_count:
-                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"error": {"code": "not_enough_questions", "message": "Not enough active questions available for this exam."}},
-                )
-            
-            # Shuffle questions deterministically
-            rng = random.Random(seed)
-            rng.shuffle(question_ids)
-            question_ids = question_ids[:exam_template.question_count]
-            total_questions = len(question_ids)
 
-            session_ttl_seconds = exam_template.duration_seconds + settings.EXAM_GRACE_PERIOD_SECONDS if exam_template.duration_seconds else settings.DEFAULT_EXAM_TTL_SECONDS
-            deadline_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=exam_template.duration_seconds)).timestamp() if exam_template.duration_seconds else None
+            if request.past_exam_id:
+                # NEW: Start session based on a specific Past Exam
+                questions = await conn.scalars(
+                    select(Question.id)
+                    .join(PastExamQuestion, Question.id == PastExamQuestion.question_id)
+                    .where(PastExamQuestion.past_exam_id == request.past_exam_id, Question.is_active == True)
+                )
+                question_ids = questions.all()
+                total_questions = len(question_ids)
+                if total_questions == 0:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail={"error": {"code": "no_questions_found", "message": "No questions found for the selected past exam."}},
+                    )
+                session_ttl_seconds = settings.DEFAULT_EXAM_TTL_SECONDS
+                deadline_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=session_ttl_seconds)).timestamp()
+            else:
+                # DEFAULT: Start session based on an Exam Template
+                exam_template = await conn.scalar(
+                    select(ExamTemplate).where(
+                        ExamTemplate.course_id == request.course_id, ExamTemplate.mode == "exam", ExamTemplate.is_active == True
+                    )
+                )
+                if not exam_template:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail={"error": {"code": "exam_template_not_found", "message": "No active exam template found for the given course."}},
+                    )
+                
+                # For now, fetch course questions
+                questions = await conn.scalars(
+                    select(Question.id).where(Question.course_id == request.course_id, Question.is_active == True)
+                )
+                question_ids = questions.all()
+                total_questions = len(question_ids)
+                if total_questions < exam_template.question_count:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={"error": {"code": "not_enough_questions", "message": "Not enough active questions available for this exam."}},
+                    )
+                
+                # Shuffle and slice
+                rng = random.Random(seed)
+                rng.shuffle(question_ids)
+                question_ids = question_ids[:exam_template.question_count]
+                total_questions = len(question_ids)
+
+                session_ttl_seconds = exam_template.duration_seconds + settings.EXAM_GRACE_PERIOD_SECONDS if exam_template.duration_seconds else settings.DEFAULT_EXAM_TTL_SECONDS
+                deadline_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=exam_template.duration_seconds)).timestamp() if exam_template.duration_seconds else None
+            
+            # Common Shuffle for Past Exam if desired
+            if request.past_exam_id:
+                rng = random.Random(seed)
+                rng.shuffle(question_ids)
 
         elif request.mode == "practice":
             if not request.topic_id:
@@ -138,30 +166,9 @@ class SessionService:
                     detail={"error": {"code": "no_questions_found", "message": "No active questions found for this topic."}},
                 )
             
-            # Shuffle questions deterministically
             rng = random.Random(seed)
             rng.shuffle(question_ids)
-
             session_ttl_seconds = settings.DEFAULT_PRACTICE_TTL_SECONDS
-
-        elif request.mode == "exam" and request.past_exam_id:
-            # New functionality: Start session for a specific PastExam
-            questions = await conn.scalars(
-                select(Question.id)
-                .join(PastExamQuestion, Question.id == PastExamQuestion.question_id)
-                .where(PastExamQuestion.past_exam_id == request.past_exam_id, Question.is_active == True)
-            )
-            question_ids = questions.all()
-            total_questions = len(question_ids)
-            if total_questions == 0:
-                 raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={"error": {"code": "no_questions_found", "message": "No questions found for the selected past exam."}},
-                )
-            
-            # Shuffle questions deterministically
-            rng = random.Random(seed)
-            rng.shuffle(question_ids)
 
             session_ttl_seconds = settings.DEFAULT_EXAM_TTL_SECONDS
             # Optionally add a deadline based on question count if template is missing
@@ -248,7 +255,9 @@ class SessionService:
         }
 
         # Store session data in Redis Hash
-        await self.redis.hset(session_key, mapping=session_data)
+        # Filter out None values for Redis hset mapping
+        filtered_session_data = {k: v for k, v in session_data.items() if v is not None}
+        await self.redis.hset(session_key, mapping=filtered_session_data)
         await self.redis.expire(session_key, session_ttl_seconds)
 
         # Set active session pointer with SETNX
@@ -274,9 +283,35 @@ class SessionService:
             mode=request.mode,
             status="in_progress",
             question_count=total_questions,
-            ttl_seconds=session_ttl_seconds,
             deadline_ts=int(deadline_ts) if deadline_ts else None,
         )
+
+    async def get_session_metadata(self, session_id: uuid.UUID, telegram_id: int) -> dict:
+        session_key = get_session_key(str(session_id))
+        session_data = await self.redis.hgetall(session_key)
+        
+        if not session_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": {"code": "session_not_found", "message": "Session not found."}}
+            )
+        
+        if int(session_data["telegram_id"]) != telegram_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "access_denied", "message": "Access denied."}}
+            )
+
+        # Convert simple types for return
+        return {
+            "session_id": str(session_id),
+            "status": session_data.get("status"),
+            "mode": session_data.get("mode"),
+            "current_index": int(session_data.get("current_index", 0)),
+            "total_questions": int(session_data.get("total_questions", 0)),
+            "deadline_ts": int(float(session_data.get("deadline_ts"))) if session_data.get("deadline_ts") else None,
+            "start_time": session_data.get("start_time"),
+        }
 
     async def get_question(self, conn: AsyncConnection, telegram_id: int, session_id: uuid.UUID) -> GetQuestionResponse:
         session_key = get_session_key(str(session_id))
@@ -304,7 +339,8 @@ class SessionService:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"error": {"code": "end_of_session", "message": "No more questions."}})
             
         question_uuid = question_ids[current_index]
-        question = await conn.scalar(select(Question).where(Question.id == question_uuid))
+        result = await conn.execute(select(Question).where(Question.id == question_uuid))
+        question = result.one_or_none()
         
         if not question:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "question_not_found", "message": "Question data unavailable."}})
@@ -324,8 +360,8 @@ class SessionService:
             question_id=uuid.UUID(question_uuid),
             index=current_index,
             total=int(session_data["total_questions"]),
-            prompt=question.prompt if session_data["mode"] != "exam" else None,
-            image_url=f"https://api.teleexam.ai/v1/render/{question_uuid}" if session_data["mode"] == "exam" else None,
+            prompt=self._armor_text(question.prompt),
+            image_url=None, # Removed as per request
             choice_a=question.choice_a,
             choice_b=question.choice_b,
             choice_c=question.choice_c,
@@ -376,10 +412,12 @@ class SessionService:
         is_correct = None
         explanation = None
         if session_data["mode"] != "exam":
-            question = await conn.scalar(select(Question).where(Question.id == request.question_id))
-            is_correct = (request.answer == question.correct_choice)
-            explanation = question.explanation_static
-            answers[str(request.question_id)]["is_correct"] = is_correct
+            result = await conn.execute(select(Question).where(Question.id == request.question_id))
+            question = result.one_or_none()
+            if question:
+                is_correct = (request.answer == question.correct_choice)
+                explanation = question.explanation_static
+                answers[str(request.question_id)]["is_correct"] = is_correct
             # Update Redis with correctness for summary later
             await self.redis.hset(session_key, "answers", json.dumps(answers))
 
