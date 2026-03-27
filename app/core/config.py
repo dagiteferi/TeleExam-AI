@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     DEFAULT_QUIZ_QUESTION_COUNT: int = 5
     DEFAULT_COMPLETED_SESSION_TTL_SECONDS: int = 3600
 
-    QTOKEN_TTL_SECONDS: int = 90
+    QTOKEN_TTL_SECONDS: int = 300
 
     admin_jwt_secret: str
     admin_jwt_algorithm: str = "HS256"

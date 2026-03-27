@@ -1,8 +1,10 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
 
+from uuid import UUID
+
 class SessionResultDetail(BaseModel):
-    question_id: int
+    question_id: UUID
     user_answer: str
     correct_answer: str
     is_correct: bool

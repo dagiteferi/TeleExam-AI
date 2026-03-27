@@ -349,7 +349,7 @@ class SessionService:
         import secrets
         qtoken = secrets.token_urlsafe(16)
         qtoken_key = get_qtoken_key(session_data["user_id"], str(session_id), question_uuid)
-        await self.redis.set(qtoken_key, qtoken, ex=90) # 90s TTL
+        await self.redis.set(qtoken_key, qtoken, ex=settings.QTOKEN_TTL_SECONDS)
         
         # Track served time
         served_time_key = get_question_served_time_key(str(session_id), current_index)
@@ -485,7 +485,7 @@ class SessionService:
         # Persist Result to Postgres
         from sqlalchemy import insert
         res_stmt = insert(ExamResult).values(
-            id=uuid.uuid4(),
+            id=session_id,
             user_id=uuid.UUID(session_data["user_id"]),
             course_id=uuid.UUID(session_data["course_id"]) if session_data.get("course_id") else None,
             mode=session_data["mode"],
@@ -497,9 +497,26 @@ class SessionService:
             submitted_at=datetime.datetime.now(datetime.timezone.utc),
             duration_seconds=int((datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(session_data["start_time"])).total_seconds()),
             metadata_={"seed": session_data["seed"]}
-        ).returning(ExamResult.id)
+        )
         
-        db_res_id = await conn.scalar(res_stmt)
+        await conn.execute(res_stmt)
+
+        # Bulk insert answers
+        if answers_dict:
+            answers_stmt = insert(UserAnswer).values([
+                {
+                    "id": uuid.uuid4(),
+                    "exam_result_id": session_id,
+                    "user_id": uuid.UUID(session_data["user_id"]),
+                    "question_id": uuid.UUID(q_id),
+                    "topic_id": q_map[q_id]["topic"],
+                    "selected_choice": ans["selected_choice"],
+                    "is_correct": ans["is_correct"],
+                    "answered_at": datetime.datetime.fromisoformat(ans["answered_at"])
+                }
+                for q_id, ans in answers_dict.items() if q_id in q_map
+            ])
+            await conn.execute(answers_stmt)
         
         # Mark as completed in Redis
         await self.redis.hset(session_key, "status", "completed")
