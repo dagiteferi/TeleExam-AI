@@ -1,4 +1,5 @@
 from __future__ import annotations
+import enum
 
 import datetime
 import uuid
@@ -14,7 +15,7 @@ from app.models.topic import Topic
 from app.models.exam_template import ExamTemplate
 
 
-class SessionMode(str, Enum):
+class SessionMode(str, enum.Enum):
     exam = "exam"
     practice = "practice"
     quiz = "quiz"
@@ -26,7 +27,7 @@ class ExamResult(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id"), nullable=False)
-    mode = Column(Enum(enum_class=SessionMode, name='session_mode_enum'), nullable=False)
+    mode = Column(Text, nullable=False)
     exam_template_id = Column(UUID(as_uuid=True), ForeignKey("exam_templates.id"), nullable=True)
     topic_id = Column(UUID(as_uuid=True), ForeignKey("topics.id"), nullable=True)
 

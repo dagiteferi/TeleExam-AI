@@ -19,9 +19,10 @@ Base = declarative_base()
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        # Expect SQLAlchemy URL like: postgresql+asyncpg://user:pass@host:5432/dbname
+        # Ensure driver is asyncpg even if psycopg2 is in .env for Alembic compatibility
+        async_url = settings.sqlalchemy_database_url.replace("+psycopg2", "+asyncpg")
         _engine = create_async_engine(
-            settings.sqlalchemy_database_url,
+            async_url,
             pool_size=10,
             max_overflow=20,
             pool_pre_ping=True,

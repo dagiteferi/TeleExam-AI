@@ -1,4 +1,5 @@
 from __future__ import annotations
+import enum
 
 import datetime
 import uuid
@@ -12,7 +13,7 @@ from app.models.course import Course
 from app.models.topic import Topic
 
 
-class QuestionFormat(str, Enum):
+class QuestionFormat(str, enum.Enum):
     mcq = "mcq"
 
 
@@ -22,7 +23,7 @@ class Question(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id"), nullable=False)
     topic_id = Column(UUID(as_uuid=True), ForeignKey("topics.id"), nullable=False)
-    format = Column(Enum(enum_class=QuestionFormat, name='question_format_enum'), nullable=False, default=QuestionFormat.mcq)
+    format = Column(Text, nullable=False, default=QuestionFormat.mcq)
 
     prompt = Column(Text, nullable=False)
     choice_a = Column(Text, nullable=False)
