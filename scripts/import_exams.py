@@ -41,7 +41,7 @@ def compute_hash(prompt: str, choices: list[str]) -> bytes:
 
 # Configuration: Set the path to the JSON file or directory to import.
 # To import only one file, put the full path here: e.g., "data/exams/sene_2016_computer_science.json"
-TARGET_PATH = "data/exams/sene_2016_computer_science.json"
+TARGET_PATH = "data/exams/tir_2017_computer_science.json"
 
 
 async def import_exams_async(target_path: str = TARGET_PATH):

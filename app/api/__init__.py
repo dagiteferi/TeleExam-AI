@@ -7,6 +7,7 @@ from app.api.user import router as user_router
 from app.api.sessions import router as sessions_router # Added
 from app.api.results import router as results_router
 from app.api.ai import router as ai_router
+from app.api.questions import router as questions_router
 
 api_router = APIRouter(
     prefix="/api",
@@ -18,3 +19,4 @@ api_router.include_router(user_router, tags=["users"])
 api_router.include_router(sessions_router, tags=["sessions"]) # Added
 api_router.include_router(results_router, tags=["results"])
 api_router.include_router(ai_router, tags=["ai"])
+api_router.include_router(questions_router, tags=["discovery"])
