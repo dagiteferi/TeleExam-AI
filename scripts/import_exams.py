@@ -39,19 +39,38 @@ def compute_hash(prompt: str, choices: list[str]) -> bytes:
     text = prompt + "".join(choices)
     return hashlib.sha256(text.encode('utf-8')).digest()
 
-async def import_exams_async(data_dir: str = "data/exams"):
+# Configuration: Set the path to the JSON file or directory to import.
+# To import only one file, put the full path here: e.g., "data/exams/sene_2016_computer_science.json"
+TARGET_PATH = "data/exams/sene_2016_computer_science.json"
+
+
+async def import_exams_async(target_path: str = TARGET_PATH):
     engine = get_engine()
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
-    path = Path(data_dir)
+    path = Path(target_path)
     if not path.exists():
-        logger.error(f"Directory not found: {path}")
+        logger.error(f"Path not found: {path}")
         return
 
-    logger.info("Starting scalable exam ingestion process...")
+    logger.info(f"Starting ingestion process for path: {path}")
+
+    files_to_process = []
+    if path.is_file():
+        if path.suffix.lower() == ".json":
+            files_to_process.append(path)
+        else:
+            logger.error(f"File is not a JSON: {path}")
+            return
+    elif path.is_dir():
+        files_to_process = list(path.glob("*.json"))
+    
+    if not files_to_process:
+        logger.info("No JSON files found to process.")
+        return
 
     async with async_session() as session:
-        for file in path.glob("*.json"):
+        for file in files_to_process:
             logger.info(f"Importing {file.name}")
             with open(file, encoding="utf-8") as f:
                 data = json.load(f)
@@ -200,7 +219,7 @@ async def import_exams_async(data_dir: str = "data/exams"):
     logger.info("All exams imported successfully!")
 
 def main():
-    asyncio.run(import_exams_async())
+    asyncio.run(import_exams_async(TARGET_PATH))
 
 if __name__ == "__main__":
     main()
