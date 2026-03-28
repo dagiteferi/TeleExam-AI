@@ -2,7 +2,6 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncConnection
 from uuid import UUID
 
-from langchain_core.messages import HumanMessage
 from sqlalchemy import select
 from app.models.user import User
 from app.ai.graph import AiGraph
@@ -10,10 +9,14 @@ from app.ai.tools import fetch_question_details, fetch_user_weak_topics
 from app.schemas.ai import ExplainResponse, ChatResponse, StudyPlanResponse, StudyPlanDetails, StudyPlanTopic
 from app.core.utils import armor_text
 
+# Singleton: built once at startup, shared by all concurrent requests
+_ai_graph = AiGraph()
+
 
 class AiService:
     def __init__(self):
-        self.ai_graph = AiGraph()
+        # Reuse the module-level singleton instead of building a new graph per request
+        self.ai_graph = _ai_graph
 
     async def explain_question(
         self,
@@ -27,11 +30,10 @@ class AiService:
         if not question_details:
             return ExplainResponse(success=False, explanation="Question context unavailable or access denied.")
 
-        # Pedagogical instructions for a deep, single-paragraph explanation
+        # Compact prompt: covers all 4 pedagogical steps in fewer tokens
         instructions = (
-            "You are a professional exam assistant. Provide a single, cohesive pedagogical paragraph. "
-            "Explain exactly: (1) what the question asks, (2) the core concept, (3) why the correct answer is right, "
-            "and (4) why other choices are wrong. No labels. 5-8 sentences. Deep and smooth text."
+            "Write one fluent paragraph (5-7 sentences): explain the question, the concept, "
+            "why the correct answer is right, and why each other choice is wrong. No headers."
         )
 
         prompt_message = (
@@ -64,12 +66,10 @@ class AiService:
         if not q_details:
              return ChatResponse(success=False, ai_response="Question context unavailable or access denied.")
 
-        # Interactive instructions for social tutor mode
+        # Compact prompt: answer the specific doubt only
         instructions = (
-            "You are a supportive exam tutor. The user is asking a follow-up question about a specific problem. "
-            "Answer their specific doubt directly and concisely based on the context provided. "
-            "Do NOT repeat the entire conceptual analysis unless relevant to their specific doubt. "
-            "Be encouraging and clear."
+            "You are an exam tutor. Answer the student's doubt directly, concisely, "
+            "based only on the provided question context. 2-4 sentences max."
         )
 
         context_prefix = (
