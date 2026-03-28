@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal, TypedDict, Annotated
 import operator
 
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
@@ -22,9 +22,8 @@ class AgentState(TypedDict):
 llm = ChatGroq(temperature=0, groq_api_key=settings.groq_api_key, model_name=settings.groq_model)
 
 
-def create_agent(llm: ChatGroq, tools: list, system_message: str):
+def create_agent(llm: ChatGroq, tools: list):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", system_message),
         MessagesPlaceholder(variable_name="messages"),
     ])
     return prompt | llm.bind_tools(tools)
@@ -32,16 +31,9 @@ def create_agent(llm: ChatGroq, tools: list, system_message: str):
 
 class AiGraph:
     def __init__(self):
-        self.tools = [get_question_details, get_user_weak_topics]
-        # Refined instructions for a single cohesive paragraph output
-        system_instructions = (
-            "You are a professional exam assistant. Provide a single, cohesive paragraph explaining the question. "
-            "In this one paragraph, you MUST cover: (1) what the question asks, (2) the core concept, "
-            "(3) why the correct answer is right, and (4) why other choices are wrong. "
-            "Write exactly ONE smooth, deep, and pedagogical paragraph of 5-8 sentences. Avoid labels or numbers. "
-            "Explain specifically what the question means, the concept, why the answer is right, and why others are wrong."
-        )
-        self.agent_runnable = create_agent(llm, self.tools, system_instructions)
+        # Remove get_question_details to save DB connections since context is provided in prompt
+        self.tools = [get_user_weak_topics]
+        self.agent_runnable = create_agent(llm, self.tools)
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -69,5 +61,10 @@ class AiGraph:
 
         return workflow.compile()
 
-    async def invoke(self, input_message: str, config: dict):
-        return await self.graph.ainvoke({"messages": [HumanMessage(content=input_message)]}, config)
+    async def invoke(self, input_message: str, system_instructions: str, config: dict):
+        # Prepend system instructions as a SystemMessage to ensure they are followed
+        messages = [
+            SystemMessage(content=system_instructions),
+            HumanMessage(content=input_message)
+        ]
+        return await self.graph.ainvoke({"messages": messages}, config)
