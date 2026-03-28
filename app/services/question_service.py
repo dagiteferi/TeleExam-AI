@@ -5,6 +5,7 @@ from typing import Literal
 
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncConnection
+from app.core.utils import armor_text
 
 from app.models.question import Question
 from app.models.past_exam import PastExam, PastExamQuestion
@@ -13,11 +14,13 @@ from app.models.topic import Topic
 from app.models.department import Department
 
 class QuestionService:
+
     async def get_questions(
         self,
         conn: AsyncConnection,
         department_id: uuid.UUID | None = None,
         year: int | None = None,
+        semester: str | None = None,
         course_name_search: str | None = None,
         mode: Literal["exam", "practice"] = "practice",
     ) -> dict:
@@ -50,6 +53,8 @@ class QuestionService:
             filters.append(PastExam.department_id == department_id)
         if year:
             filters.append(PastExam.year == year)
+        if semester:
+            filters.append(PastExam.semester == semester)
         if course_name_search:
             filters.append(Course.name.ilike(f"%{course_name_search}%"))
 
@@ -63,11 +68,11 @@ class QuestionService:
         for row in rows:
             item = {
                 "id": row.id,
-                "prompt": row.prompt,
-                "choice_a": row.choice_a,
-                "choice_b": row.choice_b,
-                "choice_c": row.choice_c,
-                "choice_d": row.choice_d,
+                "prompt": armor_text(row.prompt),
+                "choice_a": armor_text(row.choice_a),
+                "choice_b": armor_text(row.choice_b),
+                "choice_c": armor_text(row.choice_c),
+                "choice_d": armor_text(row.choice_d),
                 "year": row.year,
                 "course_id": row.course_id,
                 "course_name": row.course_name,
@@ -76,7 +81,7 @@ class QuestionService:
             
             if mode == "practice":
                 item["correct_choice"] = row.correct_choice
-                item["explanation"] = row.explanation_static
+                item["explanation"] = armor_text(row.explanation_static)
             
             questions_list.append(item)
 

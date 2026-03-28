@@ -8,6 +8,7 @@ from app.models.user import User
 from app.ai.graph import AiGraph
 from app.ai.tools import get_question_details, get_user_weak_topics
 from app.schemas.ai import ExplainResponse, ChatResponse, StudyPlanResponse, StudyPlanDetails, StudyPlanTopic
+from app.core.utils import armor_text
 
 
 class AiService:
@@ -38,7 +39,7 @@ class AiService:
 
         return ExplainResponse(
             success=True,
-            explanation=explanation_text,
+            explanation=armor_text(explanation_text),
             key_points=["Point 1", "Point 2"],
             weak_topic_suggestion="Review Algorithm Basics"
         )
@@ -55,7 +56,7 @@ class AiService:
 
         return ChatResponse(
             success=True,
-            ai_response=ai_response_text
+            ai_response=armor_text(ai_response_text)
         )
 
     async def generate_study_plan(
