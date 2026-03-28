@@ -85,10 +85,10 @@ class SessionService:
         seed = random.randint(0, 2**32 - 1) # For deterministic randomization
 
         if request.mode == "exam":
-            if not request.course_id:
+            if not request.course_id and not request.past_exam_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"error": {"code": "missing_course_id", "message": "course_id is required for exam mode"}},
+                    detail={"error": {"code": "missing_filter", "message": "At least course_id or past_exam_id is required."}},
                 )
 
             if request.past_exam_id:
@@ -107,7 +107,7 @@ class SessionService:
                     )
                 session_ttl_seconds = settings.DEFAULT_EXAM_TTL_SECONDS
                 deadline_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=session_ttl_seconds)).timestamp()
-            else:
+            elif request.course_id:
                 # DEFAULT: Start session based on an Exam Template
                 exam_template = await conn.scalar(
                     select(ExamTemplate).where(
@@ -115,34 +115,41 @@ class SessionService:
                     )
                 )
                 if not exam_template:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail={"error": {"code": "exam_template_not_found", "message": "No active exam template found for the given course."}},
+                    # If no specific template, just grab questions from the course as a fallback exam
+                    questions = await conn.scalars(
+                        select(Question.id).where(Question.course_id == request.course_id, Question.is_active == True)
                     )
-                
-                # For now, fetch course questions
-                questions = await conn.scalars(
-                    select(Question.id).where(Question.course_id == request.course_id, Question.is_active == True)
-                )
-                question_ids = questions.all()
-                total_questions = len(question_ids)
-                if total_questions < exam_template.question_count:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail={"error": {"code": "not_enough_questions", "message": "Not enough active questions available for this exam."}},
+                    question_ids = questions.all()
+                else:
+                    # For now, fetch course questions
+                    questions = await conn.scalars(
+                        select(Question.id).where(Question.course_id == request.course_id, Question.is_active == True)
                     )
-                
-                # Shuffle and slice
-                rng = random.Random(seed)
-                rng.shuffle(question_ids)
-                question_ids = question_ids[:exam_template.question_count]
-                total_questions = len(question_ids)
+                    question_ids = questions.all()
+                    
+                    if len(question_ids) < exam_template.question_count:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail={"error": {"code": "not_enough_questions", "message": "Not enough active questions available for this exam."}},
+                        )
+                    
+                    # Shuffle and slice
+                    rng = random.Random(seed)
+                    rng.shuffle(question_ids)
+                    question_ids = question_ids[:exam_template.question_count]
 
-                session_ttl_seconds = exam_template.duration_seconds + settings.EXAM_GRACE_PERIOD_SECONDS if exam_template.duration_seconds else settings.DEFAULT_EXAM_TTL_SECONDS
-                deadline_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=exam_template.duration_seconds)).timestamp() if exam_template.duration_seconds else None
+                total_questions = len(question_ids)
+                if total_questions == 0:
+                    raise HTTPException(
+                         status_code=status.HTTP_400_BAD_REQUEST,
+                         detail={"error": {"code": "not_enough_questions", "message": "No questions found for this course."}},
+                    )
+
+                session_ttl_seconds = exam_template.duration_seconds + settings.EXAM_GRACE_PERIOD_SECONDS if (exam_template and exam_template.duration_seconds) else settings.DEFAULT_EXAM_TTL_SECONDS
+                deadline_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=exam_template.duration_seconds)).timestamp() if (exam_template and exam_template.duration_seconds) else None
             
-            # Common Shuffle for Past Exam if desired
-            if request.past_exam_id:
+            # Common Shuffle (re-randomize if based on specific past exam)
+            if question_ids:
                 rng = random.Random(seed)
                 rng.shuffle(question_ids)
 

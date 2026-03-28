@@ -1,12 +1,9 @@
 from __future__ import annotations
-from typing import Literal
-from uuid import UUID
-
 from pydantic import BaseModel, Field
 
 
 class ExplainRequest(BaseModel):
-    question_id: UUID
+    question_id: str
     user_answer: str | None = None
 
 
@@ -19,6 +16,7 @@ class ExplainResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    question_id: str
 
 
 class ChatResponse(BaseModel):
@@ -26,15 +24,26 @@ class ChatResponse(BaseModel):
     ai_response: str
 
 
-class StudyPlanTopic(BaseModel):
-    name: str
-    resources: list[str] = Field(default_factory=list)
+# --- Study Plan ---
+
+class StudyTopic(BaseModel):
+    topic: str
+    errors: int
+    focus: str  # e.g. "High Priority", "Medium", "Review"
+
+
+class StudyDay(BaseModel):
+    day: int
+    topic: str
+    action: str  # e.g. "Read + Practice", "Solve past questions"
 
 
 class StudyPlanDetails(BaseModel):
-    title: str
-    duration_days: int
-    topics: list[StudyPlanTopic] = Field(default_factory=list)
+    summary: str  # e.g. "You scored 62% overall. Weak in Databases, OS."
+    total_exams_done: int
+    overall_score_percent: float
+    weak_topics: list[StudyTopic] = Field(default_factory=list)
+    daily_plan: list[StudyDay] = Field(default_factory=list)
 
 
 class StudyPlanRequest(BaseModel):
@@ -43,4 +52,5 @@ class StudyPlanRequest(BaseModel):
 
 class StudyPlanResponse(BaseModel):
     success: bool = True
-    study_plan: StudyPlanDetails
+    study_plan: StudyPlanDetails | None = None
+    message: str | None = None  # For prereq failures or user-facing notes
