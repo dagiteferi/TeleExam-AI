@@ -19,6 +19,7 @@ class ExplainResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    question_id: UUID
 
 
 class ChatResponse(BaseModel):

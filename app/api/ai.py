@@ -26,7 +26,7 @@ async def chat_interaction(
     conn: DbConn,
     _current_telegram_id: CurrentTelegramId,
 ) -> ChatResponse:
-    return await AiService().chat(conn, _current_telegram_id, request.message)
+    return await AiService().chat(conn, _current_telegram_id, request.message, request.question_id)
 
 
 @router.post("/study-plan", response_model=StudyPlanResponse)

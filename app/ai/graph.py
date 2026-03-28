@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal, TypedDict, Annotated
 import operator
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
@@ -33,13 +33,25 @@ def create_agent(llm: ChatGroq, tools: list, system_message: str):
 class AiGraph:
     def __init__(self):
         self.tools = [get_question_details, get_user_weak_topics]
-        self.agent_runnable = create_agent(llm, self.tools, "You are a helpful AI assistant.")
+        # Refined instructions for a single cohesive paragraph output
+        system_instructions = (
+            "You are a professional exam assistant. Provide a single, cohesive paragraph explaining the question. "
+            "In this one paragraph, you MUST cover: (1) what the question asks, (2) the core concept, "
+            "(3) why the correct answer is right, and (4) why other choices are wrong. "
+            "Write exactly ONE smooth, deep, and pedagogical paragraph of 5-8 sentences. Avoid labels or numbers. "
+            "Explain specifically what the question means, the concept, why the answer is right, and why others are wrong."
+        )
+        self.agent_runnable = create_agent(llm, self.tools, system_instructions)
         self.graph = self._build_graph()
 
     def _build_graph(self):
         workflow = StateGraph(AgentState)
 
-        workflow.add_node("agent", self.agent_runnable)
+        async def call_agent(state):
+            response = await self.agent_runnable.ainvoke(state)
+            return {"messages": [response]}
+
+        workflow.add_node("agent", call_agent)
         workflow.add_node("tools", ToolNode(self.tools))
 
         workflow.set_entry_point("agent")
@@ -47,9 +59,10 @@ class AiGraph:
         def should_continue(state: AgentState) -> Literal["tools", END]:
             messages = state["messages"]
             last_message = messages[-1]
-            if not last_message.tool_calls:
-                return END
-            return "tools"
+            # Ensure we only check tool_calls on AIMessages that actually have them
+            if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                return "tools"
+            return END
 
         workflow.add_conditional_edges("agent", should_continue)
         workflow.add_edge("tools", "agent")
