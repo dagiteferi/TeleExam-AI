@@ -22,10 +22,10 @@ class AiService:
         question_id: UUID,
         user_answer: str | None,
     ) -> ExplainResponse:
-        # Use fetch_question_details (raw dict) for the service layer
-        question_details = await fetch_question_details(question_id)
+        # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
+        question_details = await fetch_question_details(question_id, telegram_id=telegram_id)
         if not question_details:
-            return ExplainResponse(success=False, explanation="Question context unavailable.")
+            return ExplainResponse(success=False, explanation="Question context unavailable or access denied.")
 
         # Pedagogical instructions for a deep, single-paragraph explanation
         instructions = (
@@ -59,10 +59,10 @@ class AiService:
         message: str,
         question_id: UUID,
     ) -> ChatResponse:
-        # Use fetch_question_details (raw dict) for the service layer
-        q_details = await fetch_question_details(question_id)
+        # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
+        q_details = await fetch_question_details(question_id, telegram_id=telegram_id)
         if not q_details:
-             return ChatResponse(success=False, ai_response="Question context unavailable.")
+             return ChatResponse(success=False, ai_response="Question context unavailable or access denied.")
 
         # Interactive instructions for social tutor mode
         instructions = (
@@ -94,12 +94,13 @@ class AiService:
         conn: AsyncConnection,
         telegram_id: int,
     ) -> StudyPlanResponse:
-        # Fetch user UUID from telegram_id
+        # SECURE: Fetch current user ID using the authenticated telegram session
         user_id = await conn.scalar(select(User.id).where(User.telegram_id == telegram_id))
         if not user_id:
-            return StudyPlanResponse(success=False, study_plan=StudyPlanDetails(title="User not found", duration_days=0, topics=[]))
+            return StudyPlanResponse(success=False, study_plan=StudyPlanDetails(title="User session invalid", duration_days=0, topics=[]))
 
-        weak_topics_data = await fetch_user_weak_topics(user_id)
+        # SECURE: Pass student's telegram_id to activate RLS for history fetching
+        weak_topics_data = await fetch_user_weak_topics(user_id, telegram_id=telegram_id)
         weak_topics_names = [topic["topic_name"] for topic in weak_topics_data]
 
         prompt_message = f"Generate a study plan for the following weak topics: {', '.join(weak_topics_names)}. The user wants to study for 7 days."
