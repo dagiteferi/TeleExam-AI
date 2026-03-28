@@ -23,11 +23,18 @@ class QuestionService:
     ) -> dict:
         """Fetch questions based on various filters of discovery."""
         
-        # Base query joining necessary metadata
-        # We join Question to PastExamQuestion then to PastExam to get the Year
+        # Select explicit columns to avoid ORM/Core confusion in raw rows
         query = (
             select(
-                Question,
+                Question.id,
+                Question.prompt,
+                Question.choice_a,
+                Question.choice_b,
+                Question.choice_c,
+                Question.choice_d,
+                Question.correct_choice,
+                Question.explanation_static,
+                Question.course_id,
                 PastExam.year,
                 Course.name.label("course_name"),
                 Topic.name.label("topic_name")
@@ -44,7 +51,6 @@ class QuestionService:
         if year:
             filters.append(PastExam.year == year)
         if course_name_search:
-            # Case-insensitive partial match or exact match
             filters.append(Course.name.ilike(f"%{course_name_search}%"))
 
         if filters:
@@ -55,24 +61,22 @@ class QuestionService:
 
         questions_list = []
         for row in rows:
-            q = row.Question
             item = {
-                "id": q.id,
-                "prompt": q.prompt,
-                "choice_a": q.choice_a,
-                "choice_b": q.choice_b,
-                "choice_c": q.choice_c,
-                "choice_d": q.choice_d,
+                "id": row.id,
+                "prompt": row.prompt,
+                "choice_a": row.choice_a,
+                "choice_b": row.choice_b,
+                "choice_c": row.choice_c,
+                "choice_d": row.choice_d,
                 "year": row.year,
-                "course_id": q.course_id,
+                "course_id": row.course_id,
                 "course_name": row.course_name,
                 "topic_name": row.topic_name,
             }
             
-            # For practice mode, include correct answer and explanation immediately
             if mode == "practice":
-                item["correct_choice"] = q.correct_choice
-                item["explanation"] = q.explanation_static
+                item["correct_choice"] = row.correct_choice
+                item["explanation"] = row.explanation_static
             
             questions_list.append(item)
 
@@ -92,3 +96,14 @@ class QuestionService:
         query = select(Department.id, Department.name).where(Department.is_active == True)
         result = await conn.execute(query)
         return [{"id": row.id, "name": row.name} for row in result]
+
+    async def get_exams_by_department(self, conn: AsyncConnection, department_id: uuid.UUID) -> list[dict]:
+        """List available years and semesters for a specific department."""
+        query = (
+            select(PastExam.year, PastExam.semester)
+            .where(PastExam.department_id == department_id)
+            .distinct()
+            .order_by(PastExam.year.desc())
+        )
+        result = await conn.execute(query)
+        return [{"year": row.year, "semester": row.semester} for row in result]
