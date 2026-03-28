@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import api_router
+from app.api import api_router, public_api_router
 from app.admin.auth import router as admin_auth_router
 from app.admin.users import router as admin_users_router
 from app.admin.stats import router as admin_stats_router
@@ -62,6 +62,7 @@ def create_app() -> FastAPI:
     )
 
     from app.api.render import router as render_router
+    app.include_router(public_api_router)
     app.include_router(api_router)
     app.include_router(render_router, prefix="/api", tags=["render"])
     app.include_router(admin_auth_router, prefix="/admin", tags=["Admin Auth"])
