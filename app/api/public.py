@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import select
 
-from app.api.deps import get_db_conn
+from app.api.deps import get_public_db_conn
 from app.models.department import Department
 from app.models.past_exam import PastExam
 from app.models.course import Course
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/public")
 
 @router.get("/discovery-metadata")
 async def get_discovery_metadata(
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)],
+    conn: Annotated[AsyncConnection, Depends(get_public_db_conn)],
 ) -> dict:
     """Publicly accessible metadata for the frontend selection menus."""
     

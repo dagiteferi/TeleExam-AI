@@ -18,7 +18,7 @@ async def get_current_telegram_id(request: Request) -> int:
     """
     Retrieves the telegram_id from the request state, which is set by BotAuthMiddleware.
     """
-    telegram_id = request.state.telegram_id
+    telegram_id = getattr(request.state, "telegram_id", None)
     if not telegram_id:
         # This should ideally not happen if BotAuthMiddleware is correctly placed
         raise HTTPException(
