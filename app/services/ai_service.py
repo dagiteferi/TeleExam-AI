@@ -24,24 +24,28 @@ class AiService:
     ) -> ExplainResponse:
         question_details = await get_question_details.ainvoke({"question_id": question_id})
         if not question_details:
-            return ExplainResponse(success=False, explanation="Question not found.")
+            return ExplainResponse(success=False, explanation="Question context unavailable.")
 
+        # Tell the AI to analyze and generate the response explicitly
         prompt_message = (
-            f"Explain question {question_details['question_id']}: '{question_details['prompt']}'. "
+            f"Please analyze the following question and provide your powerful, structured single-paragraph explanation:\n\n"
+            f"Question: {question_details['prompt']}\n"
             f"Choices: A) {question_details['choice_a']}, B) {question_details['choice_b']}, "
-            f"C) {question_details['choice_c']}, D) {question_details['choice_d']}. "
-            f"User answered: {user_answer}. Correct answer: {question_details['correct_choice']}."
+            f"C) {question_details['choice_c']}, D) {question_details['choice_d']}\n"
+            f"Correct Answer: {question_details['correct_choice']}\n"
+            f"Student's Answer: {user_answer if user_answer else 'None'}"
         )
         
         result = await self.ai_graph.invoke(prompt_message, config={"configurable": {"session_id": str(telegram_id)}})
-        
-        explanation_text = result["messages"][-1].content if result and result["messages"] else "No explanation generated."
+        explanation_text = result["messages"][-1].content if result and result["messages"] else "I'm having trouble generating an explanation right now."
 
+        # Simple extraction of key points or generic relevant ones for now
+        # Ideally, the AI graph would return a structured response.
         return ExplainResponse(
             success=True,
             explanation=armor_text(explanation_text),
-            key_points=["Point 1", "Point 2"],
-            weak_topic_suggestion="Review Algorithm Basics"
+            key_points=["Conceptual Analysis", "Correct Application"],
+            weak_topic_suggestion=f"Review concepts related to {question_details[ 'topic_name' ]}" if 'topic_name' in question_details else "General review"
         )
 
     async def chat(
@@ -49,10 +53,23 @@ class AiService:
         conn: AsyncConnection,
         telegram_id: int,
         message: str,
+        question_id: UUID | None = None,
     ) -> ChatResponse:
-        result = await self.ai_graph.invoke(message, config={"configurable": {"session_id": str(telegram_id)}})
+        context_prefix = ""
+        if question_id:
+            q_details = await get_question_details.ainvoke({"question_id": question_id})
+            if q_details:
+                context_prefix = (
+                    f"CONTEXT: We are discussing this question: '{q_details['prompt']}'. "
+                    f"Choice A: {q_details['choice_a']}, Choice B: {q_details['choice_b']}, "
+                    f"Choice C: {q_details['choice_c']}, Choice D: {q_details['choice_d']}. "
+                    f"Correct Answer: {q_details['correct_choice']}.\n\nUSER QUESTION: "
+                )
+
+        full_message = f"{context_prefix}{message}"
+        result = await self.ai_graph.invoke(full_message, config={"configurable": {"session_id": str(telegram_id)}})
         
-        ai_response_text = result["messages"][-1].content if result and result["messages"] else "No response generated."
+        ai_response_text = result["messages"][-1].content if result and result["messages"] else "I'm sorry, I couldn't respond to that."
 
         return ChatResponse(
             success=True,
