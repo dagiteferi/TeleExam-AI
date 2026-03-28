@@ -34,13 +34,14 @@ class DiscoveryResponse(BaseModel):
 async def get_questions_by_exam(
     department_id: UUID4,
     year: int | None = None,
+    semester: str | None = None,
     mode: Literal["exam", "practice"] = "practice",
     telegram_id: Annotated[int, Depends(get_current_telegram_id)] = None,
     conn: Annotated[AsyncConnection, Depends(get_db_conn)] = None,
 ) -> DiscoveryResponse:
-    """Get questions filtered by department and year."""
+    """Get questions filtered by department, year, and semester."""
     return await QuestionService().get_questions(
-        conn, department_id=department_id, year=year, mode=mode
+        conn, department_id=department_id, year=year, semester=semester, mode=mode
     )
 
 @router.get("/by-course", response_model=DiscoveryResponse)

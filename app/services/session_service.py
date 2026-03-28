@@ -37,6 +37,7 @@ from app.schemas.sessions import (
     SubmitSessionResponse,
 )
 from app.core.config import settings
+from app.core.utils import armor_text
 
 logger = structlog.get_logger(__name__)
 
@@ -45,11 +46,7 @@ class SessionService:
     def __init__(self, redis_client: Redis):
         self.redis = redis_client
 
-    def _armor_text(self, text: str) -> str:
-        """Injects zero-width space between every character to hinder scraping."""
-        if not text:
-            return ""
-        return "\u200b".join(list(text))
+    # Removed local _armor_text and used utility
 
     async def start_session(
         self,
@@ -361,7 +358,7 @@ class SessionService:
             question_id=uuid.UUID(question_uuid),
             index=current_index,
             total=int(session_data["total_questions"]),
-            prompt=self._armor_text(question.prompt),
+            prompt=armor_text(question.prompt),
             image_url=None, # Removed as per request
             choice_a=question.choice_a,
             choice_b=question.choice_b,
