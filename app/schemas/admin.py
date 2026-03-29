@@ -61,6 +61,21 @@ class DailyActiveUser(BaseModel):
 class DAUResponse(BaseModel):
     data: list[DailyActiveUser]
 
+class PlatformUserResponse(BaseModel):
+    id: UUID
+    telegram_id: int
+    telegram_username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    invite_count: int = 0
+    is_pro: bool
+    plan_expiry: datetime | None = None
+    is_banned: bool
+    ban_reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class TopInviter(BaseModel):
     user_id: UUID
     telegram_id: int
