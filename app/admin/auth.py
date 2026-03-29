@@ -17,7 +17,7 @@ from app.models.admin_user import AdminUser
 from pydantic import BaseModel
 from fastapi.security import OAuth2PasswordRequestForm
 from typing import Annotated
-from app.schemas.admin import Token, InviteAdminRequest, InviteAdminResponse, AdminUserResponse
+from app.schemas.admin import Token, InviteAdminRequest, InviteAdminResponse, AdminUserResponse, AdminPermission
 from app.admin.deps import require_superadmin, get_admin_db
 
 router = APIRouter(prefix="/auth")
@@ -117,7 +117,7 @@ async def invite_admin(
         email=email,
         password_hash=raw_password,  
         role="admin",
-        permissions=request.permissions,
+        permissions=[p.value for p in request.permissions],
         invited_by_email=settings.superadmin_email,
         is_active=True,
     )
@@ -135,7 +135,7 @@ async def invite_admin(
 @router.patch("/admins/{email}/permissions")
 async def update_admin_permissions(
     email: str,
-    permissions: list[str],
+    permissions: list[AdminPermission],
     superadmin: dict = Depends(require_superadmin),
     conn: AsyncConnection = Depends(get_admin_db),
 ) -> dict:
@@ -148,7 +148,9 @@ async def update_admin_permissions(
             detail={"error": {"code": "cannot_modify_superadmin", "message": "Cannot modify superadmin"}},
         )
 
-    result = await conn.execute(update(AdminUser).where(AdminUser.email == email).values(permissions=permissions))
+    stringified_permissions = [p.value for p in permissions]
+
+    result = await conn.execute(update(AdminUser).where(AdminUser.email == email).values(permissions=stringified_permissions))
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Admin not found"}})
     await conn.commit()
