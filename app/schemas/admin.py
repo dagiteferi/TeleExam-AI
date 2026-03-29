@@ -5,6 +5,13 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from enum import Enum
+
+class AdminPermission(str, Enum):
+    view_users = "view_users"
+    ban_user = "ban_user"
+    view_stats = "view_stats"
+    manage_content = "manage_content"
 
 
 class Token(BaseModel):
@@ -21,7 +28,7 @@ class AdminUserResponse(BaseModel):
     id: UUID
     email: str
     role: str
-    permissions: list[str] = []
+    permissions: list[AdminPermission] = []
     invited_by_email: str | None = None
     is_active: bool
     created_at: datetime
@@ -30,13 +37,13 @@ class AdminUserResponse(BaseModel):
 
 class InviteAdminRequest(BaseModel):
     email: str
-    permissions: list[str] = []  # e.g. ["ban_user", "view_users", "view_stats"]
+    permissions: list[AdminPermission] = []  # Converts to multiple-select dropdown in Swagger
 
 
 class InviteAdminResponse(BaseModel):
     email: str
-    password: str  # Shown ONCE — superadmin must share securely
-    permissions: list[str]
+    password: str  
+    permissions: list[AdminPermission]
     message: str
 
 
@@ -80,4 +87,4 @@ class UserFlaggedResponse(BaseModel):
     telegram_id: int
     is_banned_pg: bool
     ban_reason_pg: str | None = None
-    flag_redis: str | None = None # e.g., "blocked", "throttled"
+    flag_redis: str | None = None 

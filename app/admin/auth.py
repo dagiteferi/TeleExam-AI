@@ -14,16 +14,18 @@ from app.core.config import settings
 from app.core.security import create_access_token
 from app.db.postgres import db_conn
 from app.models.admin_user import AdminUser
+from pydantic import BaseModel
+from fastapi.security import OAuth2PasswordRequestForm
+from typing import Annotated
 from app.schemas.admin import Token, InviteAdminRequest, InviteAdminResponse, AdminUserResponse
 from app.admin.deps import require_superadmin, get_admin_db
 
 router = APIRouter(prefix="/auth")
 
-
 @router.post("/login", response_model=Token)
 async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
 ) -> Token:
     """
     Login for both superadmin (.env) and regular admins (DB).

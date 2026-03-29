@@ -19,7 +19,7 @@ router = APIRouter(prefix="/users")
 
 @router.get("/", response_model=list[AdminUserResponse], dependencies=[Depends(require_permission("view_users"))])
 async def get_all_users(
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
     limit: int = 100,
     offset: int = 0,
 ) -> list[AdminUserResponse]:
@@ -33,7 +33,7 @@ async def get_all_users(
 async def update_user_by_admin(
     user_id: UUID,
     user_update: UserAdminUpdate,
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
 ) -> AdminUserResponse:
     """Requires: view_users permission or superadmin."""
     stmt = update(User).where(User.id == user_id).values(**user_update.model_dump(exclude_unset=True))
@@ -51,7 +51,7 @@ async def ban_user(
     user_id: UUID,
     reason: str,
     duration_hours: int | None = None,
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
     redis: Redis = Depends(get_redis_client),
 ) -> AdminUserResponse:
     """Requires: ban_user permission or superadmin."""
@@ -73,7 +73,7 @@ async def ban_user(
 @router.post("/{user_id}/unban", response_model=AdminUserResponse, dependencies=[Depends(require_permission("ban_user"))])
 async def unban_user(
     user_id: UUID,
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
     redis: Redis = Depends(get_redis_client),
 ) -> AdminUserResponse:
     """Requires: ban_user permission or superadmin."""
@@ -93,7 +93,7 @@ async def unban_user(
 
 @router.get("/flagged", response_model=list[UserFlaggedResponse], dependencies=[Depends(require_permission("view_users"))])
 async def get_flagged_users(
-    conn: AsyncConnection = Depends(db_conn),
+    conn: AsyncConnection = Depends(get_admin_db),
     redis: Redis = Depends(get_redis_client),
 ) -> list[UserFlaggedResponse]:
     """Requires: view_users permission or superadmin."""
