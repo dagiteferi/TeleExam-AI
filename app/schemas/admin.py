@@ -17,12 +17,27 @@ class TokenData(BaseModel):
 
 
 class AdminUserResponse(BaseModel):
+    model_config = {"from_attributes": True}
     id: UUID
     email: str
     role: str
+    permissions: list[str] = []
+    invited_by_email: str | None = None
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None = None
+
+
+class InviteAdminRequest(BaseModel):
+    email: str
+    permissions: list[str] = []  # e.g. ["ban_user", "view_users", "view_stats"]
+
+
+class InviteAdminResponse(BaseModel):
+    email: str
+    password: str  # Shown ONCE — superadmin must share securely
+    permissions: list[str]
+    message: str
 
 
 class UserAdminUpdate(BaseModel):

@@ -34,4 +34,8 @@ class Settings(BaseSettings):
     admin_jwt_algorithm: str = "HS256"
     admin_jwt_ttl_minutes: int = 60
 
+    
+    superadmin_email: str
+    superadmin_password: str
+
 settings = Settings()

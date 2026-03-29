@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text, func, select, Integer
 
-from app.admin.deps import require_admin
+from app.admin.deps import require_permission
 from app.db.postgres import db_conn
 from app.models.activity_log import ActivityLog
 from app.models.user import User
@@ -19,7 +19,7 @@ async def get_admin_db():
     async with db_conn(telegram_id=None) as conn:
         yield conn
 
-router = APIRouter(prefix="/stats", dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/stats", dependencies=[Depends(require_permission("view_stats"))])
 
 @router.get("/dau", response_model=DAUResponse)
 async def get_daily_active_users(
