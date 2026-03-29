@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import select, update
+from sqlalchemy import select, update, insert
 import secrets
 import datetime
 
@@ -17,6 +17,7 @@ from app.models.admin_user import AdminUser
 from pydantic import BaseModel
 from fastapi.security import OAuth2PasswordRequestForm
 from typing import Annotated
+from fastapi import Form
 from app.schemas.admin import Token, InviteAdminRequest, InviteAdminResponse, AdminUserResponse, AdminPermission
 from app.admin.deps import require_superadmin, get_admin_db
 
@@ -50,9 +51,9 @@ async def login(
 
     
     result = await conn.execute(select(AdminUser).where(AdminUser.email == email))
-    admin = result.scalars().one_or_none()
+    admin = result.mappings().one_or_none()
 
-    if not admin or not admin.is_active:
+    if not admin or not admin["is_active"]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": {"code": "invalid_credentials", "message": "Incorrect email or password"}},
@@ -60,7 +61,7 @@ async def login(
         )
 
    
-    if password != admin.password_hash:
+    if password != admin["password_hash"]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": {"code": "invalid_credentials", "message": "Incorrect email or password"}},
@@ -76,7 +77,7 @@ async def login(
     await conn.commit()
 
     token = create_access_token(
-        data={"email": admin.email, "role": admin.role},
+        data={"email": admin["email"], "role": admin["role"]},
         expires_delta=timedelta(minutes=settings.admin_jwt_ttl_minutes),
     )
     return Token(access_token=token, token_type="bearer")
@@ -84,16 +85,18 @@ async def login(
 
 @router.post("/invite", response_model=InviteAdminResponse)
 async def invite_admin(
-    request: InviteAdminRequest,
+    email: Annotated[str, Form(...)],
+    password: Annotated[str, Form(...)],
+    permissions: Annotated[list[AdminPermission], Form(...)],
     superadmin: dict = Depends(require_superadmin),
     conn: AsyncConnection = Depends(get_admin_db),
 ) -> InviteAdminResponse:
     """
-    Superadmin-only: invite a new admin with a specific email and permissions.
-    A random secure password is auto-generated and returned ONCE.
-    The invited admin cannot change their own credentials.
+    Superadmin-only: invite a new admin.
+    Provides a native form in Swagger UI allowing the superadmin to type
+    the email, specify the password manually, and select permissions from a dropdown.
     """
-    email = request.email.strip().lower()
+    email = email.strip().lower()
 
   
     existing = await conn.scalar(select(AdminUser.id).where(AdminUser.email == email))
@@ -111,24 +114,23 @@ async def invite_admin(
         )
 
     
-    raw_password = secrets.token_urlsafe(12)
-
-    new_admin = AdminUser(
-        email=email,
-        password_hash=raw_password,  
-        role="admin",
-        permissions=[p.value for p in request.permissions],
-        invited_by_email=settings.superadmin_email,
-        is_active=True,
+    await conn.execute(
+        insert(AdminUser).values(
+            email=email,
+            password_hash=password,  
+            role="admin",
+            permissions=[p.value for p in permissions],
+            invited_by_email=settings.superadmin_email,
+            is_active=True,
+        )
     )
-    conn.add(new_admin)
     await conn.commit()
 
     return InviteAdminResponse(
         email=email,
-        password=raw_password,  
-        permissions=request.permissions,
-        message="Admin invited. Share these credentials securely. They cannot be changed by the admin.",
+        password=password,  
+        permissions=permissions,
+        message="Admin successfully invited with your provided credentials.",
     )
 
 
@@ -180,5 +182,5 @@ async def list_admins(
 ) -> list[AdminUserResponse]:
     """Superadmin-only: list all invited admins."""
     result = await conn.execute(select(AdminUser))
-    admins = result.scalars().all()
-    return [AdminUserResponse.model_validate(a, from_attributes=True) for a in admins]
+    admins = result.mappings().all()
+    return [AdminUserResponse(**a) for a in admins]
