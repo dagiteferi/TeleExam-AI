@@ -57,14 +57,14 @@ async def get_current_admin(
 
     
     result = await conn.execute(select(AdminUser).where(AdminUser.email == email))
-    admin = result.scalars().one_or_none()
-    if not admin or not admin.is_active:
+    admin = result.mappings().one_or_none()
+    if not admin or not admin["is_active"]:
         raise credentials_exception
 
     return {
-        "email": admin.email,
-        "role": admin.role,
-        "permissions": admin.permissions or [],
+        "email": admin["email"],
+        "role": admin["role"],
+        "permissions": admin["permissions"] or [],
         "is_superadmin": False,
     }
 
