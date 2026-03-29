@@ -5,6 +5,13 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from enum import Enum
+
+class AdminPermission(str, Enum):
+    view_users = "view_users"
+    ban_user = "ban_user"
+    view_stats = "view_stats"
+    manage_content = "manage_content"
 
 
 class Token(BaseModel):
@@ -17,12 +24,27 @@ class TokenData(BaseModel):
 
 
 class AdminUserResponse(BaseModel):
+    model_config = {"from_attributes": True}
     id: UUID
     email: str
     role: str
+    permissions: list[AdminPermission] = []
+    invited_by_email: str | None = None
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None = None
+
+
+class InviteAdminRequest(BaseModel):
+    email: str
+    permissions: list[AdminPermission] = []  # Converts to multiple-select dropdown in Swagger
+
+
+class InviteAdminResponse(BaseModel):
+    email: str
+    password: str  
+    permissions: list[AdminPermission]
+    message: str
 
 
 class UserAdminUpdate(BaseModel):
@@ -38,6 +60,21 @@ class DailyActiveUser(BaseModel):
 
 class DAUResponse(BaseModel):
     data: list[DailyActiveUser]
+
+class PlatformUserResponse(BaseModel):
+    id: UUID
+    telegram_id: int
+    telegram_username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    invite_count: int = 0
+    is_pro: bool
+    plan_expiry: datetime | None = None
+    is_banned: bool
+    ban_reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
 
 class TopInviter(BaseModel):
     user_id: UUID
@@ -65,4 +102,4 @@ class UserFlaggedResponse(BaseModel):
     telegram_id: int
     is_banned_pg: bool
     ban_reason_pg: str | None = None
-    flag_redis: str | None = None # e.g., "blocked", "throttled"
+    flag_redis: str | None = None 
