@@ -372,6 +372,7 @@ class SessionService:
             total=int(session_data["total_questions"]),
             prompt=armor_text(question.prompt),
             image_url=None, # Removed as per request
+            options=[question.choice_a, question.choice_b, question.choice_c, question.choice_d],
             choice_a=question.choice_a,
             choice_b=question.choice_b,
             choice_c=question.choice_c,
@@ -421,17 +422,19 @@ class SessionService:
         # Immediate feedback for practice/quiz
         is_correct = None
         explanation = None
+        correct_choice = None
         if session_data["mode"] != "exam":
             result = await conn.execute(select(Question).where(Question.id == request.question_id))
             question = result.one_or_none()
             if question:
                 is_correct = (request.answer == question.correct_choice)
+                correct_choice = question.correct_choice
                 explanation = question.explanation_static
                 answers[str(request.question_id)]["is_correct"] = is_correct
             # Update Redis with correctness for summary later
             await self.redis.hset(session_key, "answers", json.dumps(answers))
 
-        return SubmitAnswerResponse(accepted=True, is_correct=is_correct, explanation=explanation)
+        return SubmitAnswerResponse(accepted=True, is_correct=is_correct, explanation=explanation, correct_choice=correct_choice)
 
     async def next_question(self, conn: AsyncConnection, telegram_id: int, session_id: uuid.UUID) -> NextResponse:
         session_key = get_session_key(str(session_id))
@@ -541,6 +544,9 @@ class SessionService:
             correct_count=correct_count,
             wrong_count=wrong_count,
             score_percent=score_percent,
-            submitted_at=datetime.datetime.now(datetime.timezone.utc)
+            submitted_at=datetime.datetime.now(datetime.timezone.utc),
+            score=correct_count,
+            total_questions=len(question_ids),
+            message="Keep learning!" if score_percent < 50 else "Great job!",
         )
 

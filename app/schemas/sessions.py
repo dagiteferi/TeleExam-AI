@@ -34,12 +34,13 @@ class QuestionPayload(BaseModel):
     index: int
     total: int
     prompt: str | None = None
-    image_url: str | None = None  # exam mode: required; practice/quiz: usually null
+    image_url: str | None = None
+    options: list[str] = [] # Added for bot compatibility
     choice_a: str
     choice_b: str
     choice_c: str
     choice_d: str
-    qtoken: str  # mandatory; short-lived; single-use
+    qtoken: str
 
 
 class GetQuestionResponse(BaseModel):
@@ -55,8 +56,9 @@ class SubmitAnswerRequest(BaseModel):
 
 class SubmitAnswerResponse(BaseModel):
     accepted: bool = True
-    is_correct: bool | None = None  # practice/quiz only
-    explanation: str | None = None  # practice/quiz only
+    is_correct: bool | None = None
+    correct_choice: str | None = None  # Added for bot compatibility
+    explanation: str | None = None
 
 
 class NextResponse(BaseModel):
@@ -72,4 +74,7 @@ class SubmitSessionResponse(BaseModel):
     wrong_count: int
     score_percent: float
     submitted_at: datetime
-    per_topic_breakdown: list[dict] | None = None
+    # Added fields for easier bot integration
+    score: int | None = None
+    total_questions: int | None = None
+    message: str | None = None
