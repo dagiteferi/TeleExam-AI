@@ -11,34 +11,39 @@ from app.schemas.users import UserUpsertRequest
 
 class UserService:
     async def upsert_user(self, conn: AsyncConnection, *, telegram_id: int, user_data: UserUpsertRequest) -> User:
-        # Check if user exists
-        stmt = select(User).where(User.telegram_id == telegram_id)
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        
+        # Check existence to know if referral processing is needed (to avoid re-applying rewards)
+        stmt = select(User.id).where(User.telegram_id == telegram_id)
         result = await conn.execute(stmt)
-        existing_user = result.scalar_one_or_none()
+        existing_user_id = result.scalar_one_or_none()
+        is_new = existing_user_id is None
 
-        from app.services.referral_service import ReferralService
-        referral_service = ReferralService()
+        # Build upsert logic with PostgreSQL's ON CONFLICT
+        insert_data = user_data.model_dump(exclude={'ref_code'})
+        # Ensure we use the authorized telegram_id from the dependency
+        insert_data["telegram_id"] = telegram_id
         
-        if existing_user:
-            # Update existing user
-            update_data = user_data.model_dump(exclude_unset=True, exclude={'ref_code'})
-            if update_data:
-                await conn.execute(
-                    update(User).where(User.telegram_id == telegram_id).values(**update_data)
-                )
-        else:
-            # Create new user
-            insert_data = user_data.model_dump(exclude={'ref_code'})
-            new_user_id = await conn.scalar(insert(User).values(**insert_data).returning(User.id))
-            
-            # Process referral ONLY for NEW users
-            if user_data.ref_code:
-                await referral_service.process_referral_on_user_upsert(conn, new_user_id, user_data.ref_code)
-        
-        # ALWAYS fetch the final record as a SQLAlchemy Row
-        # Note: SQLAlchemy Rows support dot-notation access (e.g., user.id)
-        result = await conn.execute(select(User).where(User.telegram_id == telegram_id))
-        user_to_return = result.one()
+        # Fields to update if conflict occurs (exclude ID and telegram_id)
+        update_data = {k: v for k, v in insert_data.items() if k not in ["id", "telegram_id"] and v is not None}
 
+        stmt = (
+            pg_insert(User)
+            .values(**insert_data)
+            .on_conflict_do_update(
+                index_elements=[User.telegram_id],
+                set_=update_data
+            )
+            .returning(User)
+        )
+        
+        result = await conn.execute(stmt)
+        user = result.scalar_one()
+
+        # Handle referral only for NEW users
+        if is_new and user_data.ref_code:
+            from app.services.referral_service import ReferralService
+            await ReferralService().process_referral_on_user_upsert(conn, user.id, user_data.ref_code)
+        
         await conn.commit()
-        return user_to_return
+        return user

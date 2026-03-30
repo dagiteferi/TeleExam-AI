@@ -77,3 +77,11 @@ async def get_exams_by_department(
 ) -> list[dict]:
     """Get all available years and semesters for a specific department."""
     return await QuestionService().get_exams_by_department(conn, department_id)
+
+@router.get("/discovery/course/{course_id}/topics")
+async def get_topics_by_course(
+    course_id: UUID4,
+    conn: Annotated[AsyncConnection, Depends(get_db_conn)],
+) -> list[dict]:
+    """Get all topics for a specific course."""
+    return await QuestionService().get_topics_by_course(conn, course_id)

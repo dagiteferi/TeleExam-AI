@@ -105,10 +105,16 @@ class QuestionService:
     async def get_exams_by_department(self, conn: AsyncConnection, department_id: uuid.UUID) -> list[dict]:
         """List available years and semesters for a specific department."""
         query = (
-            select(PastExam.year, PastExam.semester)
+            select(PastExam.id, PastExam.year, PastExam.semester)
             .where(PastExam.department_id == department_id)
             .distinct()
             .order_by(PastExam.year.desc())
         )
         result = await conn.execute(query)
-        return [{"year": row.year, "semester": row.semester} for row in result]
+        return [{"id": row.id, "year": row.year, "semester": row.semester} for row in result]
+
+    async def get_topics_by_course(self, conn: AsyncConnection, course_id: uuid.UUID) -> list[dict]:
+        """Fetch all topics associated with a specific course."""
+        query = select(Topic.id, Topic.name).where(Topic.course_id == course_id, Topic.is_active == True)
+        result = await conn.execute(query)
+        return [{"id": row.id, "name": row.name} for row in result]

@@ -154,27 +154,32 @@ class SessionService:
                 rng.shuffle(question_ids)
 
         elif request.mode == "practice":
-            if not request.topic_id:
+            if request.topic_id:
+                questions = await conn.scalars(
+                    select(Question.id).where(Question.topic_id == request.topic_id, Question.is_active == True)
+                )
+            elif request.course_id:
+                questions = await conn.scalars(
+                    select(Question.id).where(Question.course_id == request.course_id, Question.is_active == True)
+                )
+            else:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"error": {"code": "missing_topic_id", "message": "topic_id is required for practice mode"}},
+                    detail={"error": {"code": "missing_topic_or_course_id", "message": "topic_id or course_id is required for practice mode"}},
                 )
-            questions = await conn.scalars(
-                select(Question.id).where(Question.topic_id == request.topic_id, Question.is_active == True)
-            )
+            
             question_ids = questions.all()
             total_questions = len(question_ids)
             if total_questions == 0:
                  raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail={"error": {"code": "no_questions_found", "message": "No active questions found for this topic."}},
+                    detail={"error": {"code": "no_questions_found", "message": "No active questions found for the selected topic or course."}},
                 )
             
             rng = random.Random(seed)
             rng.shuffle(question_ids)
             session_ttl_seconds = settings.DEFAULT_PRACTICE_TTL_SECONDS
 
-            session_ttl_seconds = settings.DEFAULT_EXAM_TTL_SECONDS
             # Optionally add a deadline based on question count if template is missing
             deadline_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=total_questions * 90)).timestamp() 
 
