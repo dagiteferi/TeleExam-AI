@@ -20,4 +20,4 @@ USER user
 COPY --chown=user . .
 
 # Run Redis server in the background, then start FastAPI app
-CMD ["bash", "-c", "redis-server --daemonize yes && uvicorn app.main:app --host 0.0.0.0 --port 7860"]
+CMD ["bash", "-c", "redis-server & sleep 2 && uvicorn app.main:app --host 0.0.0.0 --port 7860"]
