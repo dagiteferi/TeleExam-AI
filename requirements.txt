@@ -14,3 +14,4 @@ langchain-core>=0.1.33
 langchain-groq>=0.0.1
 groq>=0.4.2
 redis>=5.3.0
+python-jose[cryptography]==3.3.0
