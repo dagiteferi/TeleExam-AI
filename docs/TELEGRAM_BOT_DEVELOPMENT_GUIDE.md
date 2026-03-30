@@ -1,230 +1,166 @@
-# TeleExam AI - Telegram Bot Development & Deployment Guide (Production/Open-Source Edition)
+# TeleExam AI - Telegram Bot Frontend Specification (SRS & SDS)
 
-## 1. Executive Summary
-This document provides a highly scalable, production-ready specification for building the Telegram Bot frontend of the TeleExam AI platform. It is strictly designed for **open-source public repositories** capable of managing **1,000+ concurrent requests**. 
+## 1. Project Context & Vision
+TeleExam AI is an advanced, high-concurrency educational platform delivered over Telegram. It allows students in Ethiopia to take rigorous mock exams, practice specific subject topics, and receive instant, personalized AI tutoring (including pedagogical explanations, dynamic chat, and predictive study plans).
 
-The backend (FastAPI) handles all complex state, database queries, and AI generation. This bot is strictly an **asynchronous proxy layer** built with Python `aiogram 3.x`. It translates Telegram interactions into HTTP REST calls.
+The backend is a completely stateless, high-performance **FastAPI** monolith backed by PostgreSQL, Redis, and Groq LLMs via LangGraph. 
 
-**CRITICAL RULE:** Do not build admin tools in this bot. Administrative control is reserved exclusively for the standalone Web Admin panel.
+**Your Priority Goal as the AI Bot Developer**: Build the Telegram Bot frontend using Python's `aiogram 3.x`. You are building a pure presentation/translation layer. Your bot must hold **NO** persistent application state, require **NO** database, and perform **NO** educational business logic. It simply accepts Telegram `Update`s, securely calls the FastAPI backend via REST, and renders the JSON responses into beautiful interactive Telegram messages (using Inline Keyboards).
 
-## 2. Security & Open-Source Readiness
-Because the repository will be hosted publicly on GitHub, no hardcoded secrets or identifiable API endpoints should ever be committed.
+---
 
-1. **Environment Variables Only**: All configuration must load from `.env`.
-2. **`.gitignore`**: Must strictly ignore `.env`, `.venv`, `__pycache__`, and `logs/`.
-3. **`.env.example`**: Tracked in git, displaying empty template variables.
+## 2. Software Requirements Specification (SRS)
 
-**.env.example**
-```env
-BOT_TOKEN=
-BACKEND_BASE_URL=
-BACKEND_SECRET=
-WEBHOOK_URL=
-WEBHOOK_PATH=/webhook
-```
+### Functional Requirements
+1. **Onboarding / Authentication**: The bot must automatically register/update the user by parsing their Telegram profile every time they start an interaction.
+2. **Main Menu**: Provide an intuitive `ReplyKeyboardMarkup` for seamless navigation.
+3. **Session Modes**:
+   - **Exam Mode**: Sequential question delivery. Strict answers. No explanations.
+   - **Practice & Quiz Modes**: Sequential questions, but allows triggering AI Explanations per question.
+4. **AI Tutoring**: Must provide an inline button to request AI explanations for questions, and permit follow-up chats.
+5. **Study Plans**: Fetch and beautifully format predictive 7-day study plans (JSON to Markdown calendar conversion).
+6. **Referrals**: Allow users to generate and share deep-links (`t.me/Bot?start=ref_123`) to earn rewards.
 
-## 3. High-Performance Modular Architecture
-To support intense concurrency (1,000+ users), the bot must be entirely async, utilizing connection pools, singletons, and router segregation. 
+### Non-Functional Requirements
+1. **Scalability**: Must support 1,000+ concurrent requests. Long-polling is expressly forbidden in production. Must use **Webhooks** via `aiohttp.web`.
+2. **Statelessness**: No local SQLite databases. Flow control is managed by `aiogram.fsm` (which can eventually use RedisStorage).
+3. **100% Free Hosting**: Production configuration targets Render Web Service Free Tier or PythonAnywhere.
+4. **Security**: Ensure absolute zero leakage of backend APIs, secret tokens, or user data. Open-source friendly.
 
-### Folder Structure
+---
+
+## 3. Software Design Specification (SDS) & Architecture
+
+### A. Folder Architecture (Modular Design)
 ```text
 telegram-bot/
-├── .env.example
-├── .gitignore
-├── requirements.txt
-├── pytest.ini
-├── run.py                 
+├── .env.example              # MUST be committed. Contains blank templates.
+├── .gitignore                # MUST ignore .env, .venv, __pycache__, logs/
+├── requirements.txt          # aiogram==3.x, aiohttp==3.x
+├── run.py                    # Webhook server entrypoint
 ├── bot/
-│   ├── __init__.py
-│   ├── config.py          
-│   ├── middlewares/       
-│   │   ├── auth.py        
-│   │   └── throttler.py   
-│   ├── services/          
-│   │   └── api_client.py  
-│   ├── handlers/          
-│   │   ├── start.py       
-│   │   ├── exam.py        
-│   │   └── ai.py          
-│   ├── keyboards/         
-│   │   ├── reply.py       
-│   │   └── inline.py      
-│   ├── states/            
-│   │   └── exam_state.py  
-├── tests/
-│   ├── conftest.py
-│   └── test_handlers.py
+│   ├── config.py             # Loads .env vars via pydantic-settings or os.getenv
+│   ├── middlewares/
+│   │   └── auto_upsert.py    # Intercepts updates to auto-call POST /users/upsert
+│   ├── services/
+│   │   └── api_client.py     # aiohttp ClientSession singleton
+│   ├── states/
+│   │   └── session_states.py # aiogram StatesGroups (ExamInProgress, AIChatting)
+│   ├── keyboards/
+│   │   ├── reply.py          # Main Menu (Take Exam, Practice, Study Plan)
+│   │   └── inline.py         # Question Options (A, B, C, D) & AI Explain buttons
+│   └── routers/
+│       ├── onboarding.py     # /start, deep-links
+│       ├── sessions.py       # Handling /api/sessions/* (Start, Question, Answer, Next)
+│       └── ai_tutor.py       # Handling /api/ai/* (Explain, Chat, Study Plan)
 ```
 
-## 4. Production Code Guidance & Snippets
-
-### A. The Backend API Client (`bot/services/api_client.py`)
-To prevent socket exhaustion under massive load, use a single `aiohttp.ClientSession` across the bot's lifecycle.
-
-```python
-import aiohttp
-from typing import Any, Dict
-from bot.config import settings
-
-class APIClient:
-    _session: aiohttp.ClientSession | None = None
-
-    @classmethod
-    async def get_session(cls) -> aiohttp.ClientSession:
-        if cls._session is None or cls._session.closed:
-            cls._session = aiohttp.ClientSession(
-                base_url=settings.BACKEND_BASE_URL,
-                headers={"X-Telegram-Secret": settings.BACKEND_SECRET}
-            )
-        return cls._session
-
-    @classmethod
-    async def post(cls, endpoint: str, user_id: int, payload: Dict[str, Any] = None) -> Dict[str, Any]:
-        session = await cls.get_session()
-        headers = {"X-Telegram-Id": str(user_id)}
-        async with session.post(endpoint, json=payload, headers=headers) as response:
-            response.raise_for_status()
-            return await response.json()
-
-    @classmethod
-    async def get(cls, endpoint: str, user_id: int, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        session = await cls.get_session()
-        headers = {"X-Telegram-Id": str(user_id)}
-        async with session.get(endpoint, params=params, headers=headers) as response:
-            response.raise_for_status()
-            return await response.json()
+### B. Security & `.gitignore`
+Before writing ANY code, generate a strict `.gitignore` to prevent leaking the backend configuration.
+**`.gitignore` rules:**
+```
+.env
+__pycache__/
+*.pyc
+logs/
+.venv/
+env/
 ```
 
-### B. Auto-Upsert Middleware (`bot/middlewares/auth.py`)
-Intercept updates globally to ensure the user exists in the backend before handling commands.
+The secrets required by the bot are:
+- `BOT_TOKEN`: The Telegram Bot token from BotFather.
+- `BACKEND_URL`: `http://127.0.0.1:8000` (local) or production HTTPS URL.
+- `BACKEND_SECRET`: The shared security string (e.g., `my_secret_key`). **Must be sent in EVERY request as the `X-Telegram-Secret` header.**
 
-```python
-from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery
-from typing import Callable, Dict, Any, Awaitable
-from bot.services.api_client import APIClient
+---
 
-class AuthMiddleware(BaseMiddleware):
-    async def __call__(
-        self,
-        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
-        event: Message | CallbackQuery,
-        data: Dict[str, Any]
-    ) -> Any:
-        user = event.from_user
-        if not user:
-            return await handler(event, data)
-            
-        payload = {
-            "telegram_id": user.id,
-            "telegram_username": user.username,
-            "first_name": user.first_name,
-            "last_name": user.last_name
-        }
+## 4. Integration & Sequence Diagrams (To help the AI Agent)
+
+### Diagram 1: The Core Exam Session Loop
+When the user clicks "Take Exam", the exact sequence is:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Bot (Aiogram)
+    participant API (FastAPI)
+
+    User->>Bot: Clicks "Take Exam"
+    Bot->>API: POST /api/sessions/start (mode: exam)
+    API-->>Bot: { session_id: "uuid" }
+    
+    rect rgb(240, 240, 240)
+        Note over User,API: The Question Loop
+        Bot->>API: GET /api/sessions/{session_id}/question
+        API-->>Bot: { prompt, choices: [], qtoken: "abc" }
+        Bot->>User: Renders message w/ Inline Buttons [A][B][C][D]
         
-        await APIClient.post("/api/users/upsert", user_id=user.id, payload=payload)
-        return await handler(event, data)
+        User->>Bot: Clicks Inline Button "B"
+        Bot->>API: POST /api/sessions/{session_id}/answer (qtoken: "abc", answer: "B")
+        API-->>Bot: { success, is_correct, explanation }
+        
+        Bot->>API: POST /api/sessions/{session_id}/next
+        API-->>Bot: { has_next: true }
+    end
+    
+    Note over User,API: When has_next is false...
+    Bot->>API: POST /api/sessions/{session_id}/submit
+    API-->>Bot: { score, total, message }
+    Bot->>User: Displays Final Exam Score!
 ```
 
-### C. Async Endpoint Examples (`bot/handlers/exam.py`)
-Clean, callback-driven interaction for the exam loop passing the crucial `qtoken`.
+### Diagram 2: Authentication Handshake (Middleware)
+For EVERY request, the backend relies completely on the Bot establishing who the user is using HTTP Headers.
 
-```python
-from aiogram import Router, F
-from aiogram.types import CallbackQuery
-from aiogram.fsm.context import FSMContext
-from bot.services.api_client import APIClient
-from bot.keyboards.inline import build_question_keyboard
+```mermaid
+sequenceDiagram
+    participant Telegram
+    participant Bot Client (aiohttp)
+    participant FastAPI Backend
 
-router = Router()
-
-@router.callback_query(F.data.startswith("start_exam_"))
-async def start_exam(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    res = await APIClient.post("/api/sessions/start", user_id=user_id, payload={"mode": "exam"})
-    await state.update_data(session_id=res["session_id"])
+    Telegram->>Bot Client: new aiogram.Message (user.id=12345)
+    Note over Bot Client: APIClient intercepts attempt.
     
-    await serve_next_question(callback, state)
-
-async def serve_next_question(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    data = await state.get_data()
+    Bot Client->>FastAPI Backend: GET /api/users/me
+    Note over Bot Client,FastAPI Backend: HTTP Headers Injected:<br/>X-Telegram-Secret: "supersecret"<br/>X-Telegram-Id: "12345"
     
-    q_data = await APIClient.get(f"/api/sessions/{data['session_id']}/question", user_id=user_id)
-    await state.update_data(qtoken=q_data["qtoken"])
-    
-    kb = build_question_keyboard(q_data["choices"])
-    await callback.message.edit_text(q_data["prompt"], reply_markup=kb)
-
-@router.callback_query(F.data.startswith("answer_"))
-async def handle_answer(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    data = await state.get_data()
-    selected = callback.data.split("_")[1]
-    
-    await APIClient.post(
-        f"/api/sessions/{data['session_id']}/answer",
-        user_id=user_id,
-        payload={"qtoken": data["qtoken"], "answer": selected}
-    )
-    
-    await APIClient.post(f"/api/sessions/{data['session_id']}/next", user_id=user_id)
-    await serve_next_question(callback, state)
+    FastAPI Backend-->>Bot Client: 200 OK { user profile JSON }
 ```
 
-## 5. Testing Framework (`pytest`)
-High-quality code mandates testing. Because the bot is decoupled via `APIClient`, we mock network calls.
+---
 
-```python
-# tests/test_handlers.py
-from unittest.mock import patch, AsyncMock
-from bot.handlers.exam import start_exam
+## 5. Detailed Backend Endpoint Integration Guide
 
-@patch("bot.services.api_client.APIClient.post", new_callable=AsyncMock)
-async def test_start_exam(mock_post, mock_callback, mock_fsm_context):
-    mock_post.return_value = {"session_id": "test_uuid_123"}
-    
-    await start_exam(mock_callback, mock_fsm_context)
-    
-    mock_post.assert_awaited_once_with("/api/sessions/start", user_id=mock_callback.from_user.id, payload={"mode": "exam"})
-    mock_fsm_context.update_data.assert_awaited_with(session_id="test_uuid_123")
-```
+### 1. `POST /api/users/upsert`
+- **When to call**: Inside an aiogram Middleware, ensuring it runs on every new session, or heavily driven through `/start`.
+- **Payload**: `{"telegram_id": int, "telegram_username": str, "first_name": str, "last_name": str}`
+- **Purpose**: Registers the user on the backend. If they clicked a referral link (`/start ref_xyz`), append `{"invite_code": "xyz"}` to the payload.
 
-## 6. Deplyoment (High Speed / 100% Free)
-Use **Render** Web Service (Free Tier) with `aiogram`'s Webhook configuration. Do **NOT** use `bot.start_polling()` in production; Webhooks are necessary for horizontally scaling traffic reliably.
+### 2. `POST /api/sessions/start`
+- **When to call**: When user presses "Take Exam" or "Practice".
+- **Payload**: `{"mode": "exam" | "practice" | "quiz", "course_id": Optional[UUID]}`
+- **Response**: Yields `session_id`. Store this temporarily in `aiogram.fsm`.
 
-**`run.py`**
-```python
-from aiohttp import web
-from aiogram import Bot, Dispatcher
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from bot.config import settings
-from bot.handlers import start, exam, ai
-from bot.services.api_client import APIClient
+### 3. `GET /api/sessions/{session_id}/question`
+- **When to call**: Immediately after starting a session, OR after calling `/next`.
+- **Response**: `{"prompt": "What is...", "choices": [...], "qtoken": "xyz"}`.
+- **Bot Action**: Send a Telegram message containing the `prompt` text, and build an `InlineKeyboardMarkup` representing the choices. **Keep `qtoken` safely in FSM state**, it acts as an anti-cheat mechanism.
 
-bot = Bot(token=settings.BOT_TOKEN, parse_mode="HTML")
-dp = Dispatcher()
+### 4. `POST /api/sessions/{session_id}/answer`
+- **When to call**: When the user clicks an InlineChoice button in Telegram (`CallbackQuery`).
+- **Payload**: `{"qtoken": "xyz", "answer": "text_of_their_choice" }`.
+- **Bot Action**: Acknowledge the callback. Tell the user if they were right/wrong (if in Practice mode), then present a "Next Question" button OR automatically call `/next`.
 
-dp.include_routers(start.router, exam.router, ai.router)
+### 5. `POST /api/sessions/{session_id}/next`
+- **When to call**: After answering a question, to officially load the upcoming question.
+- **Response**: `{"has_next": bool}`. If `true`, loop back to `/question`. If `false`, call `/submit`.
 
-async def on_startup(bot: Bot):
-    await bot.set_webhook(f"{settings.WEBHOOK_URL}{settings.WEBHOOK_PATH}")
+### 6. `POST /api/ai/explain`
+- **When to call**: Available in Practice mode. When user clicks "Explain this using AI".
+- **Payload**: `{"question_id": "uuid", "user_answer": "their_answer"}`
+- **Response**: A beautiful highly-pedagogical explanation.
+- **Bot Action**: Display it using clean Telegram Markdown/HTML. 
 
-async def on_shutdown(bot: Bot):
-    await bot.delete_webhook()
-    session = await APIClient.get_session()
-    await session.close()
-
-dp.startup.register(on_startup)
-dp.shutdown.register(on_shutdown)
-
-app = web.Application()
-SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=settings.WEBHOOK_PATH)
-setup_application(app, dp, bot=bot)
-
-if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=8080)
-```
-- By booting an `aiohttp` web server (like Express), Render.com recognizes the bot as an active web dependency and port-binds it.
-- **Cost**: $0.00/month.
-- **Speed**: Webhook push-delivery reduces latency drastically over standard sequential GET polling.
+### 7. `POST /api/ai/study-plan`
+- **When to call**: User clicks "My Study Plan" from main menu.
+- **Response**: Predictive plan based on weak topics. Fails with 402 if the user hasn't finished at least 1 mock exam natively. Catch the `aiohttp` error and tell the user!
