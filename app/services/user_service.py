@@ -27,23 +27,23 @@ class UserService:
         # Fields to update if conflict occurs (exclude ID and telegram_id)
         update_data = {k: v for k, v in insert_data.items() if k not in ["id", "telegram_id"] and v is not None}
 
-        stmt = (
-            pg_insert(User)
-            .values(**insert_data)
-            .on_conflict_do_update(
-                index_elements=[User.telegram_id],
-                set_=update_data
+        async with conn.begin():
+            stmt = (
+                pg_insert(User)
+                .values(**insert_data)
+                .on_conflict_do_update(
+                    index_elements=[User.telegram_id],
+                    set_=update_data
+                )
+                .returning(User)
             )
-            .returning(User)
-        )
-        
-        result = await conn.execute(stmt)
-        user = result.scalar_one()
+            
+            result = await conn.execute(stmt)
+            user = result.one() # Get the full row
 
-        # Handle referral only for NEW users
-        if is_new and user_data.ref_code:
-            from app.services.referral_service import ReferralService
-            await ReferralService().process_referral_on_user_upsert(conn, user.id, user_data.ref_code)
+            # Handle referral only for NEW users
+            if is_new and user_data.ref_code:
+                from app.services.referral_service import ReferralService
+                await ReferralService().process_referral_on_user_upsert(conn, user.id, user_data.ref_code)
         
-        await conn.commit()
         return user
