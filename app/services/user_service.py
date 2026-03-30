@@ -27,18 +27,28 @@ class UserService:
             # Fields to update if conflict occurs (exclude ID and telegram_id)
             update_data = {k: v for k, v in insert_data.items() if k not in ["id", "telegram_id"] and v is not None}
 
-            stmt = (
-                pg_insert(User)
-                .values(**insert_data)
-                .on_conflict_do_update(
+            insert_stmt = pg_insert(User).values(**insert_data)
+            
+            if not update_data:
+                # If no data to update, just do nothing on conflict
+                stmt = insert_stmt.on_conflict_do_nothing().returning(User)
+            else:
+                # Standard upsert
+                stmt = insert_stmt.on_conflict_do_update(
                     index_elements=[User.telegram_id],
                     set_=update_data
-                )
-                .returning(User)
-            )
+                ).returning(User)
             
             result = await conn.execute(stmt)
-            user = result.one() # Get the full row
+            user_row = result.one_or_none()
+            
+            if user_row is None:
+                # Conflict occurred but nothing was updated/returned (case of do_nothing)
+                # Fetch existing user explicitly
+                user_result = await conn.execute(select(User).where(User.telegram_id == telegram_id))
+                user = user_result.one()
+            else:
+                user = user_row
 
             # Handle referral only for NEW users
             if is_new and user_data.ref_code:
