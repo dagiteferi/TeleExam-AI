@@ -1,0 +1,9 @@
+.venv
+__pycache__
+*.pyc
+*.pkl
+*.pt
+*.h5
+data/
+.git
+.env           # optional if you want secrets handled via HF Secrets
