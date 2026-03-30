@@ -1,27 +1,26 @@
 FROM python:3.12-slim
 
-# Install system dependencies (important for ML libs)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Create user
-RUN useradd -m -u 1000 user
-USER user
-
-ENV HOME=/home/user \
-    PATH=/home/user/.local/bin:$PATH
-
-WORKDIR $HOME/app
+WORKDIR /app
 
 # Copy requirements first
-COPY --chown=user requirements.txt .
+COPY requirements.txt .
 
-# Install dependencies
+# Install dependencies as ROOT (important)
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy app
+# Create user AFTER installing packages
+RUN useradd -m -u 1000 user
+
+# Switch to user
+USER user
+
+# Copy app files
 COPY --chown=user . .
 
 # Run app
