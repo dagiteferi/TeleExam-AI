@@ -91,8 +91,14 @@ class SessionService:
                     detail={"error": {"code": "missing_filter", "message": "At least course_id or past_exam_id is required."}},
                 )
 
-            if request.past_exam_id:
                 # NEW: Start session based on a specific Past Exam
+                past_exam = await conn.execute(select(PastExam.course_id).where(PastExam.id == request.past_exam_id))
+                past_exam_data = past_exam.fetchone()
+                if not past_exam_data:
+                    raise HTTPException(status_code=404, detail="Past exam not found")
+                
+                request.course_id = past_exam_data.course_id
+
                 questions = await conn.scalars(
                     select(Question.id)
                     .join(PastExamQuestion, Question.id == PastExamQuestion.question_id)
@@ -255,10 +261,11 @@ class SessionService:
             "current_index": 0,
             "answers": json.dumps({}),
             "start_time": start_time.isoformat(),
-            "deadline_ts": deadline_ts,
-            "topic_id": str(request.topic_id) if request.topic_id else None,
-            "course_id": str(request.course_id) if request.course_id else None,
+            "mode": request.mode,
+            "course_id": str(request.course_id) if request.course_id else "",
+            "topic_id": str(request.topic_id) if request.topic_id else "",
             "exam_template_id": str(request.exam_template_id) if request.exam_template_id else None,
+            "deadline_ts": deadline_ts,
             "seed": seed,
             "total_questions": total_questions,
         }
@@ -497,10 +504,22 @@ class SessionService:
         
         # Persist Result to Postgres
         from sqlalchemy import insert
+        
+        # FINAL SAFETY: Ensure course_id is not null for DB constraint
+        final_course_id = None
+        if session_data.get("course_id"):
+            final_course_id = uuid.UUID(session_data["course_id"])
+        else:
+            # Fallback: get course_id from one of the questions in this session
+            if question_ids:
+                final_course_id = await conn.scalar(
+                    select(Question.course_id).where(Question.id == question_ids[0])
+                )
+
         res_stmt = insert(ExamResult).values(
             id=session_id,
             user_id=uuid.UUID(session_data["user_id"]),
-            course_id=uuid.UUID(session_data["course_id"]) if session_data.get("course_id") else None,
+            course_id=final_course_id,
             mode=session_data["mode"],
             question_count=len(question_ids),
             correct_count=correct_count,
