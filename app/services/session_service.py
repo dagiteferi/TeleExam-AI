@@ -85,24 +85,30 @@ class SessionService:
         seed = random.randint(0, 2**32 - 1) # For deterministic randomization
 
         if request.mode == "exam":
-            if not request.course_id and not request.past_exam_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"error": {"code": "missing_filter", "message": "At least course_id or past_exam_id is required."}},
+            if request.past_exam_id:
+                # Fetch metadata for the selected departmental exam
+                pe_meta = await conn.execute(
+                    select(PastExam.department_id, PastExam.year, PastExam.semester, PastExam.course_id)
+                    .where(PastExam.id == request.past_exam_id)
                 )
-
-                # NEW: Start session based on a specific Past Exam
-                past_exam = await conn.execute(select(PastExam.course_id).where(PastExam.id == request.past_exam_id))
-                past_exam_data = past_exam.fetchone()
-                if not past_exam_data:
+                pe_data = pe_meta.fetchone()
+                if not pe_data:
                     raise HTTPException(status_code=404, detail="Past exam not found")
                 
-                request.course_id = past_exam_data.course_id
+                request.course_id = pe_data.course_id
+                request.department_id = pe_data.department_id
 
+                # Fetch all questions for this departmental exam across ALL courses in that year/semester
                 questions = await conn.scalars(
                     select(Question.id)
                     .join(PastExamQuestion, Question.id == PastExamQuestion.question_id)
-                    .where(PastExamQuestion.past_exam_id == request.past_exam_id, Question.is_active == True)
+                    .join(PastExam, PastExamQuestion.past_exam_id == PastExam.id)
+                    .where(
+                        PastExam.department_id == pe_data.department_id,
+                        PastExam.year == pe_data.year,
+                        PastExam.semester == pe_data.semester,
+                        Question.is_active == True
+                    )
                 )
                 question_ids = questions.all()
                 total_questions = len(question_ids)
