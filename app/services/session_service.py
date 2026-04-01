@@ -63,16 +63,22 @@ class SessionService:
             # Check if the existing session is still valid
             session_data = await self.redis.hgetall(get_session_key(existing_session_id))
             if session_data and session_data.get("status") == "in_progress":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "error": {
-                            "code": "active_session_exists",
-                            "message": f"An active {request.mode} session already exists.",
-                            "session_id": existing_session_id,
-                        }
-                    },
-                )
+                # Check for session expiration
+                import time
+                if session_data.get("deadline_ts") and time.time() > float(session_data["deadline_ts"]):
+                    # Session expired! Clean it up and allow new session
+                    await self.redis.delete(active_session_key)
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": {
+                                "code": "active_session_exists",
+                                "message": f"An active {request.mode} session already exists.",
+                                "session_id": existing_session_id,
+                            }
+                        },
+                    )
             else:
                 # Clean up stale active session pointer
                 await self.redis.delete(active_session_key)
@@ -362,14 +368,32 @@ class SessionService:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"error": {"code": "end_of_session", "message": "No more questions."}})
             
         question_uuid = question_ids[current_index]
-        result = await conn.execute(select(Question).where(Question.id == question_uuid))
-        question = result.one_or_none()
+        from app.models.past_exam import PastExam, PastExamQuestion
+        query = (
+            select(
+                Question.prompt, 
+                Question.choice_a, 
+                Question.choice_b, 
+                Question.choice_c, 
+                Question.choice_d,
+                PastExam.year, 
+                PastExam.semester
+            )
+            .outerjoin(PastExamQuestion, Question.id == PastExamQuestion.question_id)
+            .outerjoin(PastExam, PastExamQuestion.past_exam_id == PastExam.id)
+            .where(Question.id == question_uuid)
+            .order_by(PastExam.year.desc())
+            .limit(1)
+        )
+        result = await conn.execute(query)
+        row = result.fetchone()
         
-        if not question:
+        if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "question_not_found", "message": "Question data unavailable."}})
-
+        
         # Issue qtoken
         import secrets
+        from app.core.config import settings
         qtoken = secrets.token_urlsafe(16)
         qtoken_key = get_qtoken_key(session_data["user_id"], str(session_id), question_uuid)
         await self.redis.set(qtoken_key, qtoken, ex=settings.QTOKEN_TTL_SECONDS)
@@ -378,19 +402,21 @@ class SessionService:
         served_time_key = get_question_served_time_key(str(session_id), current_index)
         await self.redis.set(served_time_key, datetime.datetime.now(datetime.timezone.utc).timestamp(), ex=3600)
 
-        # Build payload
+        # Build payload using the row attributes
         payload = QuestionPayload(
             question_id=uuid.UUID(question_uuid),
             index=current_index,
             total=int(session_data["total_questions"]),
-            prompt=armor_text(question.prompt),
+            prompt=armor_text(row.prompt),
             image_url=None, # Removed as per request
-            options=[question.choice_a, question.choice_b, question.choice_c, question.choice_d],
-            choice_a=question.choice_a,
-            choice_b=question.choice_b,
-            choice_c=question.choice_c,
-            choice_d=question.choice_d,
-            qtoken=qtoken
+            options=[row.choice_a, row.choice_b, row.choice_c, row.choice_d],
+            choice_a=row.choice_a,
+            choice_b=row.choice_b,
+            choice_c=row.choice_c,
+            choice_d=row.choice_d,
+            qtoken=qtoken,
+            year=row.year,
+            semester=row.semester
         )
         
         return GetQuestionResponse(session_id=session_id, question=payload)
