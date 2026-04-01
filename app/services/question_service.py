@@ -90,11 +90,15 @@ class QuestionService:
             "total_count": len(questions_list)
         }
 
-    async def get_available_courses(self, conn: AsyncConnection) -> list[dict]:
-        """Fetch all unique course names and their IDs."""
-        query = select(Course.id, Course.name).where(Course.is_active == True).distinct()
+    async def get_available_courses(self, conn: AsyncConnection, department_id: uuid.UUID | None = None) -> list[dict]:
+        """Fetch unique course names and their IDs, optionally filtered by department."""
+        query = select(Course.id, Course.name, Course.department_id).where(Course.is_active == True)
+        if department_id:
+            query = query.where(Course.department_id == department_id)
+        
+        query = query.distinct().order_by(Course.name.asc())
         result = await conn.execute(query)
-        return [{"id": row.id, "name": row.name} for row in result]
+        return [{"id": row.id, "name": row.name, "department_id": row.department_id} for row in result]
 
     async def get_available_departments(self, conn: AsyncConnection) -> list[dict]:
         """Fetch all active departments."""
@@ -103,15 +107,20 @@ class QuestionService:
         return [{"id": row.id, "name": row.name} for row in result]
 
     async def get_exams_by_department(self, conn: AsyncConnection, department_id: uuid.UUID) -> list[dict]:
-        """List available years and semesters for a specific department."""
+        """List available years and semesters for a specific department (deduplicated)."""
+        from sqlalchemy import func, cast, Text
         query = (
-            select(PastExam.id, PastExam.year, PastExam.semester)
+            select(
+                PastExam.year,
+                PastExam.semester,
+                func.max(cast(PastExam.id, Text)).label("id")
+            )
             .where(PastExam.department_id == department_id)
-            .distinct()
+            .group_by(PastExam.year, PastExam.semester)
             .order_by(PastExam.year.desc())
         )
         result = await conn.execute(query)
-        return [{"id": row.id, "year": row.year, "semester": row.semester} for row in result]
+        return [{"id": uuid.UUID(row.id), "year": row.year, "semester": row.semester} for row in result]
 
     async def get_topics_by_course(self, conn: AsyncConnection, course_id: uuid.UUID) -> list[dict]:
         """Fetch all topics associated with a specific course."""
