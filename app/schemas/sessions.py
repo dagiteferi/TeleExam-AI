@@ -41,6 +41,8 @@ class QuestionPayload(BaseModel):
     choice_c: str
     choice_d: str
     qtoken: str
+    year: int | None = None
+    semester: str | None = None
 
 
 class GetQuestionResponse(BaseModel):
