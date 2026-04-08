@@ -24,7 +24,7 @@ logger = structlog.get_logger(__name__)
 
 def slugify(text: str) -> str:
     """Generate a simple slug for codes."""
-    return str(text).lower().strip().replace(" ", "_").replace("-", "_")
+    return str(text).lower().strip().replace("&", "and").replace(" ", "_").replace("-", "_")
 
 def get_difficulty(diff_str: str) -> int:
     """Map string difficulty to integer scale (1-5)."""
