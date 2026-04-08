@@ -4,7 +4,10 @@ import uuid
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, HTTPException
+import structlog
 from sqlalchemy.ext.asyncio import AsyncConnection
+
+logger = structlog.get_logger(__name__)
 
 from app.api.deps import get_current_telegram_id, get_db_conn
 from app.services.question_service import QuestionService
@@ -69,7 +72,9 @@ async def get_available_departments(
     conn: Annotated[AsyncConnection, Depends(get_db_conn)],
 ) -> list[dict]:
     """Get all departments."""
-    return await QuestionService().get_available_departments(conn)
+    departments = await QuestionService().get_available_departments(conn)
+    logger.info("Fetched available departments", count=len(departments), departments=departments)
+    return departments
 
 @router.get("/discovery/department/{department_id}/exams")
 async def get_exams_by_department(

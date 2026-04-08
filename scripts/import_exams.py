@@ -24,7 +24,7 @@ logger = structlog.get_logger(__name__)
 
 def slugify(text: str) -> str:
     """Generate a simple slug for codes."""
-    return str(text).lower().strip().replace("&", "and").replace(" ", "_").replace("-", "_")
+    return str(text).lower().strip().replace(" ", "_").replace("-", "_")
 
 def get_difficulty(diff_str: str) -> int:
     """Map string difficulty to integer scale (1-5)."""
@@ -41,7 +41,7 @@ def compute_hash(prompt: str, choices: list[str]) -> bytes:
 
 # Configuration: Set the path to the JSON file or directory to import.
 # To import only one file, put the full path here: e.g., "data/exams/sene_2016_computer_science.json"
-TARGET_PATH = "data/exams/yekatit_2016_accounting_and_finance.json"
+TARGET_PATH = "data/exams/2018_tir_accounting_and_finance.json"
 
 
 async def import_exams_async(target_path: str = TARGET_PATH):
