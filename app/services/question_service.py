@@ -140,12 +140,25 @@ class QuestionService:
         result = await conn.execute(query)
         all_exams = [{"id": uuid.UUID(row.id), "year": row.year, "semester": row.semester} for row in result]
         
-        # Sort by year desc and slice according to unlocked_count
-        # We group by year to count distinct years unlocked
-        unique_years = sorted(list(set(e["year"] for e in all_exams)), reverse=True)
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # We lock the LATEST exams behind referrals. 
+        # The oldest exams are available for free (0 invites).
+        unique_years = sorted(list(set(e["year"] for e in all_exams)), reverse=False) # Ascending: 2015, 2016, 2017
         allowed_years = unique_years[:unlocked_count]
         
-        return [e for e in all_exams if e["year"] in allowed_years]
+        # Add lock status to each exam
+        for e in all_exams:
+            e["is_locked"] = e["year"] not in allowed_years
+            if e["is_locked"]:
+                # Calculate how many invites they need to unlock this specific year
+                year_index = unique_years.index(e["year"])
+                e["required_invites"] = year_index
+            else:
+                e["required_invites"] = 0
+        
+        return all_exams
 
 
     async def get_topics_by_course(self, conn: AsyncConnection, course_id: uuid.UUID) -> list[dict]:

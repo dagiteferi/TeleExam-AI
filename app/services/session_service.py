@@ -112,7 +112,7 @@ class SessionService:
                     unlocked_count = invite_count + 1
                     # Get all years for this dept
                     avail_years_res = await conn.execute(
-                        select(PastExam.year).distinct().where(PastExam.department_id == pe_data.department_id).order_by(PastExam.year.desc())
+                        select(PastExam.year).distinct().where(PastExam.department_id == pe_data.department_id).order_by(PastExam.year.asc())
                     )
                     avail_years = [r[0] for r in avail_years_res.fetchall()]
                     allowed_years = avail_years[:unlocked_count]
