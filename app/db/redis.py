@@ -76,3 +76,13 @@ def get_question_served_time_key(session_id: str, current_index: int) -> str:
 SUBMIT_SNAPSHOT_KEY_PREFIX = "teleexam:submit_snapshot:"
 def get_submit_snapshot_key(session_id: str) -> str:
     return f"{SUBMIT_SNAPSHOT_KEY_PREFIX}{session_id}"
+
+AI_USAGE_KEY_PREFIX = "teleexam:ai_usage:"
+def get_ai_usage_key(telegram_id: int) -> str:
+    return f"{AI_USAGE_KEY_PREFIX}{telegram_id}"
+
+DIAGNOSTIC_TRIAL_KEY_PREFIX = "teleexam:diag_trial:"
+def get_diagnostic_trial_key(telegram_id: int) -> str:
+    return f"{DIAGNOSTIC_TRIAL_KEY_PREFIX}{telegram_id}"
+
+

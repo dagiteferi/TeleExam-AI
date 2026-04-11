@@ -58,3 +58,4 @@ async def get_redis(
 
 CurrentTelegramId = Annotated[int, Depends(get_current_telegram_id)]
 DbConn = Annotated[AsyncConnection, Depends(get_db_conn)]
+RedisConn = Annotated[Redis, Depends(get_redis)]
