@@ -46,9 +46,13 @@ class AiService:
             usage_key = get_ai_usage_key(telegram_id)
             usage = await redis.get(usage_key)
             if usage and int(usage) >= 5:
-                return ExplainResponse(success=False, explanation="⚠️ You've used your 5 free AI sessions! To continue using the AI Tutor fully, please upgrade to a PRO Plan.")
-            await redis.incr(usage_key)
-            await redis.expire(usage_key, 86400 * 30) 
+                return ExplainResponse(success=False, explanation="⚠️ You've used your 5 free AI sessions for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
+            
+            if not usage:
+                await redis.incr(usage_key)
+                await redis.expire(usage_key, 86400) # Reset after 24 hours
+            else:
+                await redis.incr(usage_key)
         # ------------------------------
 
         # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
@@ -99,8 +103,13 @@ class AiService:
             usage_key = get_ai_usage_key(telegram_id)
             usage = await redis.get(usage_key)
             if usage and int(usage) >= 5:
-                return ChatResponse(success=False, ai_response="⚠️ You've used your 5 free AI sessions! To chat with AI fully, please upgrade to a PRO Plan.")
-            await redis.incr(usage_key)
+                return ChatResponse(success=False, ai_response="⚠️ You've used your 5 free AI sessions for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
+            
+            if not usage:
+                await redis.incr(usage_key)
+                await redis.expire(usage_key, 86400) # Reset after 24 hours
+            else:
+                await redis.incr(usage_key)
         # ------------------------------
 
         # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
