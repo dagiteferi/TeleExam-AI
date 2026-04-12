@@ -74,9 +74,30 @@ async def get_my_bookmarks(
     if not user_id:
         raise HTTPException(status_code=404, detail="User not found")
         
-    # Get bookmarks
-    stmt = select(Bookmark).where(Bookmark.user_id == user_id).order_by(Bookmark.created_at.desc())
+    from app.models.question import Question
+    # Get bookmarks with question data
+    stmt = (
+        select(Bookmark, Question)
+        .join(Question, Bookmark.question_id == Question.id)
+        .where(Bookmark.user_id == user_id)
+        .order_by(Bookmark.created_at.desc())
+    )
     result = await conn.execute(stmt)
-    bookmarks = result.scalars().all()
     
-    return BookmarkListResponse(items=[BookmarkResponse.model_validate(b) for b in bookmarks])
+    items = []
+    for bookmark, question in result.all():
+        b_dict = {
+            "id": bookmark.id,
+            "question_id": bookmark.question_id,
+            "user_id": bookmark.user_id,
+            "created_at": bookmark.created_at,
+            "prompt": question.prompt,
+            "choice_a": question.choice_a,
+            "choice_b": question.choice_b,
+            "choice_c": question.choice_c,
+            "choice_d": question.choice_d,
+            "correct_choice": question.correct_choice,
+        }
+        items.append(BookmarkResponse.model_validate(b_dict))
+    
+    return BookmarkListResponse(items=items)
