@@ -93,15 +93,48 @@ class QuestionService:
             "total_count": len(questions_list)
         }
 
-    async def get_available_courses(self, conn: AsyncConnection, department_id: uuid.UUID | None = None) -> list[dict]:
-        """Fetch unique course names and their IDs, optionally filtered by department."""
+    async def get_available_courses(self, conn: AsyncConnection, telegram_id: int | None = None, department_id: uuid.UUID | None = None) -> list[dict]:
+        """Fetch unique course names and their IDs, optionally filtered by department. 1/4 free, rest locked based on invites."""
         query = select(Course.id, Course.name, Course.department_id).where(Course.is_active == True)
         if department_id:
             query = query.where(Course.department_id == department_id)
         
         query = query.distinct().order_by(Course.name.asc())
         result = await conn.execute(query)
-        return [{"id": row.id, "name": row.name, "department_id": row.department_id} for row in result]
+        courses = [{"id": row.id, "name": row.name, "department_id": row.department_id} for row in result]
+        
+        # Determine user access level
+        invite_count = 0
+        is_pro = False
+        if telegram_id:
+            user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.telegram_id == telegram_id))
+            user = user_row.fetchone()
+            if user:
+                invite_count = user.invite_count
+                is_pro = user.is_pro
+
+        # Calculate limits
+        total_courses = len(courses)
+        base_unlocked = max(1, total_courses // 4) # 25% free (at least 1)
+        
+        # Require 4 invites to unlock everything
+        if is_pro or invite_count >= 4:
+            unlocked_count = total_courses
+        else:
+            # 4 invites unlocks the remaining 75%.
+            # Each invite unlocks a proportionate amount of the remaining locked courses
+            remaining_to_unlock = total_courses - base_unlocked
+            extra_unlocked_per_invite = remaining_to_unlock / 4
+            unlocked_count = base_unlocked + int(invite_count * extra_unlocked_per_invite)
+
+        for i, c in enumerate(courses):
+            c["is_locked"] = i >= unlocked_count
+            if c["is_locked"]:
+                c["required_invites"] = 4 # Need 4 invites to unlock all, simplified
+            else:
+                c["required_invites"] = 0
+
+        return courses
 
     async def get_available_departments(self, conn: AsyncConnection) -> list[dict]:
         """Fetch all active departments."""
