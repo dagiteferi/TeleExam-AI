@@ -102,4 +102,14 @@ class UserFlaggedResponse(BaseModel):
     telegram_id: int
     is_banned_pg: bool
     ban_reason_pg: str | None = None
-    flag_redis: str | None = None 
+    flag_redis: str | None = None
+
+
+class GrantFullAccessRequest(BaseModel):
+    telegram_id: int
+
+
+class GrantFullAccessResponse(BaseModel):
+    telegram_id: int
+    is_full_access: bool
+    message: str
