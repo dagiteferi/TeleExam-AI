@@ -8,5 +8,6 @@ from app.models.exam_template import ExamTemplate, ExamTemplateTopic
 from app.models.exam_result import ExamResult, SessionMode
 from app.models.user_answer import UserAnswer
 from app.models.user_topic_error import UserTopicError
+from app.models.bookmark import Bookmark
 from app.models.activity_log import ActivityLog
 from app.models.admin_user import AdminUser
