@@ -106,19 +106,24 @@ class QuestionService:
         # Determine user access level
         invite_count = 0
         is_pro = False
+        is_full_access = False
         if telegram_id:
-            user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.telegram_id == telegram_id))
+            user_row = await conn.execute(
+                select(User.invite_count, User.is_pro, User.is_full_access)
+                .where(User.telegram_id == telegram_id)
+            )
             user = user_row.fetchone()
             if user:
                 invite_count = user.invite_count
                 is_pro = user.is_pro
+                is_full_access = user.is_full_access
 
         # Calculate limits
         total_courses = len(courses)
         base_unlocked = max(1, total_courses // 4) # 25% free (at least 1)
-        
-        # Require 4 invites to unlock everything
-        if is_pro or invite_count >= 4:
+
+        # Admin-granted full access, PRO, or 4+ invites → unlock everything
+        if is_full_access or is_pro or invite_count >= 4:
             unlocked_count = total_courses
         else:
             # 4 invites unlocks the remaining 75%.
@@ -147,17 +152,23 @@ class QuestionService:
         # Fetch user stats to determine unlocked tiers
         invite_count = 0
         is_pro = False
+        is_full_access = False
         if telegram_id:
-            user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.telegram_id == telegram_id))
+            user_row = await conn.execute(
+                select(User.invite_count, User.is_pro, User.is_full_access)
+                .where(User.telegram_id == telegram_id)
+            )
             user = user_row.fetchone()
             if user:
                 invite_count = user.invite_count
                 is_pro = user.is_pro
+                is_full_access = user.is_full_access
 
-        # Determination of allowed years: 1 (base) + invite_count (capped at total available)
-        # However, if invite_count >= 4, we unlock all.
-        unlocked_count = invite_count + 1 if invite_count < 4 else 999
-        if is_pro: unlocked_count = 999
+        # Admin-granted full access, PRO, or 4+ invites → unlock all years
+        if is_full_access or is_pro or invite_count >= 4:
+            unlocked_count = 999
+        else:
+            unlocked_count = invite_count + 1
 
         from sqlalchemy import func, cast, Text
         query = (

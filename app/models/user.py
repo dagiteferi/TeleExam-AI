@@ -25,6 +25,7 @@ class User(Base):
     referral_reward_state = Column(JSONB, nullable=False, default={}) # Added JSONB type and default
 
     is_pro = Column(Boolean, nullable=False, default=False)
+    is_full_access = Column(Boolean, nullable=False, default=False)  # Admin-granted: bypasses all invite locks
     plan_expiry = Column(DateTime(timezone=True), nullable=True)
 
     is_banned = Column(Boolean, nullable=False, default=False)
