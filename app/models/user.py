@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, ForeignKey
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, ForeignKey, BigInteger
 from sqlalchemy.dialects.postgresql import UUID, JSONB # Added JSONB
 from sqlalchemy.orm import relationship
 
@@ -14,7 +14,7 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    telegram_id = Column(Integer, unique=True, nullable=False)
+    telegram_id = Column(BigInteger, unique=True, nullable=False)
     telegram_username = Column(Text, nullable=True)
     first_name = Column(Text, nullable=True)
     last_name = Column(Text, nullable=True)
