@@ -43,19 +43,23 @@ def validate_question(q_data: Dict[str, Any], course_name: str, q_index: int) ->
         if not isinstance(options, dict):
              errors.append(f"Course '{course_name}', Q#{q_index}: 'options' must be a dictionary")
         else:
+            # Create a case-insensitive map of options
+            norm_options = {str(k).upper(): v for k, v in options.items()}
             for opt in ["A", "B", "C", "D"]:
-                if opt not in options:
+                if opt not in norm_options:
                     errors.append(f"Course '{course_name}', Q#{q_index}: ❌ Option '{opt}' is COMPLETELY MISSING")
-                elif not str(options[opt]).strip():
+                elif not str(norm_options[opt]).strip():
                     errors.append(f"Course '{course_name}', Q#{q_index}: ⚠️ Option '{opt}' is an empty string")
 
     # 3. Correct Answer Validation
     if "correct_answer" in q_data:
-        answer = q_data["correct_answer"]
+        answer = str(q_data["correct_answer"]).upper()
         if answer not in ["A", "B", "C", "D"]:
             errors.append(f"Course '{course_name}', Q#{q_index}: Invalid correct_answer '{answer}' (Must be A, B, C, or D)")
-        elif "options" in q_data and isinstance(q_data["options"], dict) and answer not in q_data["options"]:
-            errors.append(f"Course '{course_name}', Q#{q_index}: Correct answer '{answer}' points to a missing option")
+        elif "options" in q_data and isinstance(q_data["options"], dict):
+            norm_options = {str(k).upper(): v for k, v in q_data["options"].items()}
+            if answer not in norm_options:
+                errors.append(f"Course '{course_name}', Q#{q_index}: Correct answer '{answer}' points to a missing option")
 
     # 4. Difficulty Validation
     if "difficulty" in q_data:
