@@ -85,9 +85,10 @@ async def get_question_stats(
 ) -> list[QuestionStatsResponse]:
     query = select(
         Question.id.label("question_id"),
-        func.count(UserAnswer.id).label("attempt_count"),
-        func.sum(func.cast(UserAnswer.is_correct, Integer)).label("correct_count"),
-    ).join(UserAnswer, Question.id == UserAnswer.question_id).group_by(Question.id).limit(limit).offset(offset)
+        Question.prompt,
+        func.count(UserAnswer.id).label("total_answer_count"),
+        func.sum(func.cast(UserAnswer.is_correct, Integer)).label("correct_answer_count"),
+    ).join(UserAnswer, Question.id == UserAnswer.question_id).group_by(Question.id, Question.prompt).limit(limit).offset(offset)
     
     if course_id:
         query = query.where(Question.course_id == course_id)
@@ -97,11 +98,13 @@ async def get_question_stats(
     result = await conn.execute(query)
     stats = []
     for row in result:
-        correct = row.correct_count or 0
-        total = row.attempt_count or 1
+        correct = row.correct_answer_count or 0
+        total = row.total_answer_count or 1
         stats.append(QuestionStatsResponse(
             question_id=row.question_id,
-            attempt_count=total,
-            correct_rate=round(correct / total, 2)
+            prompt=row.prompt,
+            total_answer_count=total,
+            correct_answer_count=correct,
+            accuracy=round(correct / total, 2)
         ))
     return stats
