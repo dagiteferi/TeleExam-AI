@@ -12,6 +12,8 @@ from app.models.past_exam import PastExam, PastExamQuestion
 from app.models.course import Course
 from app.models.topic import Topic
 from app.models.department import Department
+from app.models.user import User
+
 
 class QuestionService:
 
@@ -23,6 +25,7 @@ class QuestionService:
         semester: str | None = None,
         course_name_search: str | None = None,
         mode: Literal["exam", "practice"] = "practice",
+        telegram_id: int | None = None,
     ) -> dict:
         """Fetch questions based on various filters of discovery."""
         
@@ -68,11 +71,11 @@ class QuestionService:
         for row in rows:
             item = {
                 "id": row.id,
-                "prompt": armor_text(row.prompt),
-                "choice_a": armor_text(row.choice_a),
-                "choice_b": armor_text(row.choice_b),
-                "choice_c": armor_text(row.choice_c),
-                "choice_d": armor_text(row.choice_d),
+                "prompt": armor_text(row.prompt, telegram_id),
+                "choice_a": armor_text(row.choice_a, telegram_id),
+                "choice_b": armor_text(row.choice_b, telegram_id),
+                "choice_c": armor_text(row.choice_c, telegram_id),
+                "choice_d": armor_text(row.choice_d, telegram_id),
                 "year": row.year,
                 "course_id": row.course_id,
                 "course_name": row.course_name,
@@ -81,7 +84,7 @@ class QuestionService:
             
             if mode == "practice":
                 item["correct_choice"] = row.correct_choice
-                item["explanation"] = armor_text(row.explanation_static)
+                item["explanation"] = armor_text(row.explanation_static, telegram_id)
             
             questions_list.append(item)
 
@@ -90,15 +93,53 @@ class QuestionService:
             "total_count": len(questions_list)
         }
 
-    async def get_available_courses(self, conn: AsyncConnection, department_id: uuid.UUID | None = None) -> list[dict]:
-        """Fetch unique course names and their IDs, optionally filtered by department."""
+    async def get_available_courses(self, conn: AsyncConnection, telegram_id: int | None = None, department_id: uuid.UUID | None = None) -> list[dict]:
+        """Fetch unique course names and their IDs, optionally filtered by department. 1/4 free, rest locked based on invites."""
         query = select(Course.id, Course.name, Course.department_id).where(Course.is_active == True)
         if department_id:
             query = query.where(Course.department_id == department_id)
         
         query = query.distinct().order_by(Course.name.asc())
         result = await conn.execute(query)
-        return [{"id": row.id, "name": row.name, "department_id": row.department_id} for row in result]
+        courses = [{"id": row.id, "name": row.name, "department_id": row.department_id} for row in result]
+        
+        # Determine user access level
+        invite_count = 0
+        is_pro = False
+        is_full_access = False
+        if telegram_id:
+            user_row = await conn.execute(
+                select(User.invite_count, User.is_pro, User.is_full_access)
+                .where(User.telegram_id == telegram_id)
+            )
+            user = user_row.fetchone()
+            if user:
+                invite_count = user.invite_count
+                is_pro = user.is_pro
+                is_full_access = user.is_full_access
+
+        # Calculate limits
+        total_courses = len(courses)
+        base_unlocked = max(1, total_courses // 4) # 25% free (at least 1)
+
+        # Admin-granted full access, PRO, or 4+ invites → unlock everything
+        if is_full_access or is_pro or invite_count >= 4:
+            unlocked_count = total_courses
+        else:
+            # 4 invites unlocks the remaining 75%.
+            # Each invite unlocks a proportionate amount of the remaining locked courses
+            remaining_to_unlock = total_courses - base_unlocked
+            extra_unlocked_per_invite = remaining_to_unlock / 4
+            unlocked_count = base_unlocked + int(invite_count * extra_unlocked_per_invite)
+
+        for i, c in enumerate(courses):
+            c["is_locked"] = i >= unlocked_count
+            if c["is_locked"]:
+                c["required_invites"] = 4 # Need 4 invites to unlock all, simplified
+            else:
+                c["required_invites"] = 0
+
+        return courses
 
     async def get_available_departments(self, conn: AsyncConnection) -> list[dict]:
         """Fetch all active departments."""
@@ -106,8 +147,29 @@ class QuestionService:
         result = await conn.execute(query)
         return [{"id": row.id, "name": row.name} for row in result]
 
-    async def get_exams_by_department(self, conn: AsyncConnection, department_id: uuid.UUID) -> list[dict]:
+    async def get_exams_by_department(self, conn: AsyncConnection, department_id: uuid.UUID, telegram_id: int | None = None) -> list[dict]:
         """List available years and semesters for a specific department (deduplicated)."""
+        # Fetch user stats to determine unlocked tiers
+        invite_count = 0
+        is_pro = False
+        is_full_access = False
+        if telegram_id:
+            user_row = await conn.execute(
+                select(User.invite_count, User.is_pro, User.is_full_access)
+                .where(User.telegram_id == telegram_id)
+            )
+            user = user_row.fetchone()
+            if user:
+                invite_count = user.invite_count
+                is_pro = user.is_pro
+                is_full_access = user.is_full_access
+
+        # Admin-granted full access, PRO, or 4+ invites → unlock all years
+        if is_full_access or is_pro or invite_count >= 4:
+            unlocked_count = 999
+        else:
+            unlocked_count = invite_count + 1
+
         from sqlalchemy import func, cast, Text
         query = (
             select(
@@ -120,7 +182,28 @@ class QuestionService:
             .order_by(PastExam.year.desc())
         )
         result = await conn.execute(query)
-        return [{"id": uuid.UUID(row.id), "year": row.year, "semester": row.semester} for row in result]
+        all_exams = [{"id": uuid.UUID(row.id), "year": row.year, "semester": row.semester} for row in result]
+        
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # We lock the LATEST exams behind referrals. 
+        # The oldest exams are available for free (0 invites).
+        unique_years = sorted(list(set(e["year"] for e in all_exams)), reverse=False) # Ascending: 2015, 2016, 2017
+        allowed_years = unique_years[:unlocked_count]
+        
+        # Add lock status to each exam
+        for e in all_exams:
+            e["is_locked"] = e["year"] not in allowed_years
+            if e["is_locked"]:
+                # Calculate how many invites they need to unlock this specific year
+                year_index = unique_years.index(e["year"])
+                e["required_invites"] = year_index
+            else:
+                e["required_invites"] = 0
+        
+        return all_exams
+
 
     async def get_topics_by_course(self, conn: AsyncConnection, course_id: uuid.UUID) -> list[dict]:
         """Fetch all topics associated with a specific course."""

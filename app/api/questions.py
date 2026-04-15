@@ -44,7 +44,7 @@ async def get_questions_by_exam(
 ) -> DiscoveryResponse:
     """Get questions filtered by department, year, and semester."""
     return await QuestionService().get_questions(
-        conn, department_id=department_id, year=year, semester=semester, mode=mode
+        conn, department_id=department_id, year=year, semester=semester, mode=mode, telegram_id=telegram_id
     )
 
 @router.get("/by-course", response_model=DiscoveryResponse)
@@ -56,16 +56,17 @@ async def get_questions_by_course(
 ) -> DiscoveryResponse:
     """Get questions for a specific course across all available years."""
     return await QuestionService().get_questions(
-        conn, course_name_search=course_name, mode=mode
+        conn, course_name_search=course_name, mode=mode, telegram_id=telegram_id
     )
 
 @router.get("/discovery/courses")
 async def get_available_courses(
     conn: Annotated[AsyncConnection, Depends(get_db_conn)],
+    telegram_id: Annotated[int, Depends(get_current_telegram_id)],
     department_id: uuid.UUID | None = Query(None),
 ) -> list[dict]:
     """Get unique course names available across all exams, optionally filtered by department."""
-    return await QuestionService().get_available_courses(conn, department_id=department_id)
+    return await QuestionService().get_available_courses(conn, telegram_id=telegram_id, department_id=department_id)
 
 @router.get("/discovery/departments")
 async def get_available_departments(
@@ -80,9 +81,11 @@ async def get_available_departments(
 async def get_exams_by_department(
     department_id: UUID4,
     conn: Annotated[AsyncConnection, Depends(get_db_conn)],
+    telegram_id: Annotated[int, Depends(get_current_telegram_id)],
 ) -> list[dict]:
     """Get all available years and semesters for a specific department."""
-    return await QuestionService().get_exams_by_department(conn, department_id)
+    return await QuestionService().get_exams_by_department(conn, department_id, telegram_id)
+
 
 @router.get("/discovery/course/{course_id}/topics")
 async def get_topics_by_course(

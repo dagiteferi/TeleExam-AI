@@ -67,8 +67,10 @@ class PlatformUserResponse(BaseModel):
     telegram_username: str | None = None
     first_name: str | None = None
     last_name: str | None = None
+    invited_by_user_id: UUID | None = None
     invite_count: int = 0
     is_pro: bool
+    is_full_access: bool
     plan_expiry: datetime | None = None
     is_banned: bool
     ban_reason: str | None = None
@@ -102,4 +104,22 @@ class UserFlaggedResponse(BaseModel):
     telegram_id: int
     is_banned_pg: bool
     ban_reason_pg: str | None = None
-    flag_redis: str | None = None 
+    flag_redis: str | None = None
+
+
+class GrantFullAccessRequest(BaseModel):
+    telegram_id: int
+
+
+class GrantFullAccessResponse(BaseModel):
+    telegram_id: int
+    is_full_access: bool
+    message: str
+
+class DashboardSummaryResponse(BaseModel):
+    total_users: int
+    user_growth_percent: float
+    total_exams: int
+    today_dau: int
+    banned_users: int
+    chart_data: list[DailyActiveUser]

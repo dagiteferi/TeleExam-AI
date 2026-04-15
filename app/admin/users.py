@@ -5,13 +5,19 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 
 from app.admin.deps import require_admin, require_superadmin, require_permission, get_admin_db
 from app.db.postgres import db_conn
 from app.db.redis import get_redis_client, get_flag_key
 from app.models.user import User
-from app.schemas.admin import PlatformUserResponse, UserAdminUpdate, UserFlaggedResponse
+from app.schemas.admin import (
+    PlatformUserResponse,
+    UserAdminUpdate,
+    UserFlaggedResponse,
+    GrantFullAccessRequest,
+    GrantFullAccessResponse,
+)
 from redis.asyncio import Redis
 
 router = APIRouter(prefix="/users")
@@ -22,9 +28,39 @@ async def get_all_users(
     conn: AsyncConnection = Depends(get_admin_db),
     limit: int = 100,
     offset: int = 0,
+    search: str | None = None,
+    is_pro: bool | None = None,
+    is_banned: bool | None = None,
+    invited_by: UUID | None = None,
 ) -> list[PlatformUserResponse]:
     """Requires: view_users permission or superadmin."""
-    result = await conn.execute(select(User).limit(limit).offset(offset))
+    query = select(User)
+
+    if search:
+        try:
+            tid = int(search)
+            query = query.where(User.telegram_id == tid)
+        except ValueError:
+            search_query = f"%{search}%"
+            query = query.where(
+                or_(
+                    User.telegram_username.ilike(search_query),
+                    User.first_name.ilike(search_query),
+                    User.last_name.ilike(search_query),
+                )
+            )
+
+    if is_pro is not None:
+        query = query.where(User.is_pro == is_pro)
+
+    if is_banned is not None:
+        query = query.where(User.is_banned == is_banned)
+
+    if invited_by:
+        query = query.where(User.invited_by_user_id == invited_by)
+
+    query = query.limit(limit).offset(offset)
+    result = await conn.execute(query)
     users = result.mappings().all()
     return [PlatformUserResponse(**user) for user in users]
 
@@ -138,3 +174,78 @@ async def get_flagged_users(
                 )
 
     return list(flagged_users_data.values())
+
+
+@router.post(
+    "/grant-full-access",
+    response_model=GrantFullAccessResponse,
+    dependencies=[Depends(require_superadmin)],
+    summary="Grant a user unlimited access (bypasses all invite locks)",
+)
+async def grant_full_access(
+    body: GrantFullAccessRequest,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> GrantFullAccessResponse:
+    """
+    Superadmin only.
+    Sets `is_full_access = True` for the user with the given `telegram_id`.
+    The user will instantly be able to access all courses and exam years
+    without needing any referral invites.
+    """
+    result = await conn.execute(select(User).where(User.telegram_id == body.telegram_id))
+    user = result.mappings().one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "user_not_found", "message": f"No user found with telegram_id={body.telegram_id}"}},
+        )
+
+    await conn.execute(
+        update(User)
+        .where(User.telegram_id == body.telegram_id)
+        .values(is_full_access=True)
+    )
+    await conn.commit()
+
+    return GrantFullAccessResponse(
+        telegram_id=body.telegram_id,
+        is_full_access=True,
+        message=f"✅ Full access granted to telegram_id={body.telegram_id}. They can now use all content without invites.",
+    )
+
+
+@router.post(
+    "/revoke-full-access",
+    response_model=GrantFullAccessResponse,
+    dependencies=[Depends(require_superadmin)],
+    summary="Revoke unlimited access — user returns to normal invite-based locking",
+)
+async def revoke_full_access(
+    body: GrantFullAccessRequest,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> GrantFullAccessResponse:
+    """
+    Superadmin only.
+    Sets `is_full_access = False` for the user with the given `telegram_id`.
+    The user returns to the normal invite-based locking system.
+    """
+    result = await conn.execute(select(User).where(User.telegram_id == body.telegram_id))
+    user = result.mappings().one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "user_not_found", "message": f"No user found with telegram_id={body.telegram_id}"}},
+        )
+
+    await conn.execute(
+        update(User)
+        .where(User.telegram_id == body.telegram_id)
+        .values(is_full_access=False)
+    )
+    await conn.commit()
+
+    return GrantFullAccessResponse(
+        telegram_id=body.telegram_id,
+        is_full_access=False,
+        message=f"🔒 Full access revoked from telegram_id={body.telegram_id}. Normal invite locks restored.",
+    )

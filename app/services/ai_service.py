@@ -15,6 +15,8 @@ from app.schemas.ai import (
     StudyPlanResponse, StudyPlanDetails, StudyTopic, StudyDay
 )
 from app.core.utils import armor_text
+from redis.asyncio import Redis
+from app.db.redis import get_ai_usage_key, get_diagnostic_trial_key
 
 # Singleton: built once at startup, shared by all concurrent requests
 _ai_graph = AiGraph()
@@ -28,10 +30,31 @@ class AiService:
     async def explain_question(
         self,
         conn: AsyncConnection,
+        redis: Redis,
         telegram_id: int,
         question_id: UUID,
         user_answer: str | None,
     ) -> ExplainResponse:
+        # --- Referral & Usage Check ---
+        user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.telegram_id == telegram_id))
+        user = user_row.fetchone()
+        
+        if not user:
+             return ExplainResponse(success=False, explanation="User profile not found.")
+
+        if not user.is_pro:
+            usage_key = get_ai_usage_key(telegram_id)
+            usage = await redis.get(usage_key)
+            if usage and int(usage) >= 5:
+                return ExplainResponse(success=False, explanation="⚠️ You've used your 5 free AI sessions for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
+            
+            if not usage:
+                await redis.incr(usage_key)
+                await redis.expire(usage_key, 86400) # Reset after 24 hours
+            else:
+                await redis.incr(usage_key)
+        # ------------------------------
+
         # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
         question_details = await fetch_question_details(question_id, telegram_id=telegram_id)
         if not question_details:
@@ -56,7 +79,7 @@ class AiService:
 
         return ExplainResponse(
             success=True,
-            explanation=armor_text(explanation_text),
+            explanation=armor_text(explanation_text, telegram_id),
             key_points=["Conceptual Analysis", "Logical Deduction"],
             weak_topic_suggestion=f"Review concepts related to {question_details.get('topic_name', 'this area')}"
         )
@@ -64,10 +87,31 @@ class AiService:
     async def chat(
         self,
         conn: AsyncConnection,
+        redis: Redis,
         telegram_id: int,
         message: str,
         question_id: UUID,
     ) -> ChatResponse:
+        # --- Referral & Usage Check ---
+        user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.telegram_id == telegram_id))
+        user = user_row.fetchone()
+        
+        if not user:
+             return ChatResponse(success=False, ai_response="User profile not found.")
+
+        if not user.is_pro:
+            usage_key = get_ai_usage_key(telegram_id)
+            usage = await redis.get(usage_key)
+            if usage and int(usage) >= 5:
+                return ChatResponse(success=False, ai_response="⚠️ You've used your 5 free AI sessions for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
+            
+            if not usage:
+                await redis.incr(usage_key)
+                await redis.expire(usage_key, 86400) # Reset after 24 hours
+            else:
+                await redis.incr(usage_key)
+        # ------------------------------
+
         # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
         q_details = await fetch_question_details(question_id, telegram_id=telegram_id)
         if not q_details:
@@ -93,35 +137,34 @@ class AiService:
 
         return ChatResponse(
             success=True,
-            ai_response=armor_text(ai_response_text)
+            ai_response=armor_text(ai_response_text, telegram_id)
         )
 
     async def generate_study_plan(
         self,
         conn: AsyncConnection,
+        redis: Redis,
         telegram_id: int,
     ) -> StudyPlanResponse:
-        # 1. Get authenticated user
-        user_id = await conn.scalar(select(User.id).where(User.telegram_id == telegram_id))
-        if not user_id:
+        UserAlias = User
+        user_row = await conn.execute(select(UserAlias).where(UserAlias.telegram_id == telegram_id))
+        user = user_row.scalar_one_or_none()
+        
+        if not user:
             return StudyPlanResponse(success=False, message="User session invalid.")
 
-        # 2. PREREQUISITE CHECK: user must have completed at least one full exam
-        completed_exam_count = await conn.scalar(
-            select(func.count(ExamResult.id)).where(
-                ExamResult.user_id == user_id,
-                ExamResult.mode == "exam"
-            )
-        )
-        if not completed_exam_count:
-            return StudyPlanResponse(
-                success=False,
-                message=(
-                    "You need to complete at least one full exam (e.g. 2015, 2016, 2017 past exam) "
-                    "before I can generate a personalized study plan. "
-                    "Your results help me find exactly where you need to focus."
-                )
-            )
+        # 1. Requirement: Must have finished at least one full exam
+        exam_stmt = select(func.count(ExamResult.id)).where(ExamResult.user_id == user.id, ExamResult.mode == "exam")
+        exam_count = (await conn.execute(exam_stmt)).scalar() or 0
+        if exam_count == 0:
+             return StudyPlanResponse(success=False, message="📊 Data Needed: Please complete at least one full Mock Exam so the AI can analyze your weak points!")
+
+        # 2. Trial & Paywall
+        if not user.is_pro:
+            trial_key = get_diagnostic_trial_key(telegram_id)
+            has_used_trial = await redis.get(trial_key)
+            if has_used_trial:
+                return StudyPlanResponse(success=False, message="💎 Upgrade to PRO: You've used your free Diagnostic Trial. To get updated insights and advanced study plans, upgrade to PRO!")
 
         # 3. Fetch overall performance summary (aggregated across all exams)
         overall_row = await conn.execute(
@@ -130,7 +173,7 @@ class AiService:
                 func.avg(ExamResult.score_percent).label("avg_score"),
                 func.sum(ExamResult.correct_count).label("total_correct"),
                 func.sum(ExamResult.wrong_count).label("total_wrong")
-            ).where(ExamResult.user_id == user_id, ExamResult.mode == "exam")
+            ).where(ExamResult.user_id == user.id, ExamResult.mode == "exam")
         )
         overall = overall_row.fetchone()
 
@@ -140,7 +183,7 @@ class AiService:
                 Topic.name,
                 UserTopicError.error_count
             ).join(Topic, UserTopicError.topic_id == Topic.id)
-            .where(UserTopicError.user_id == user_id)
+            .where(UserTopicError.user_id == user.id)
             .order_by(UserTopicError.error_count.desc())
             .limit(6)
         )
@@ -212,14 +255,23 @@ class AiService:
             ]
             summary = f"You averaged {avg_score:.1f}% across {exam_count} exam(s). Focus on the topics below."
 
+        plan_details = StudyPlanDetails(
+            summary=summary,
+            total_exams_done=exam_count,
+            overall_score_percent=round(avg_score, 1),
+            weak_topics=weak_topics,
+            daily_plan=daily_plan,
+            total_hours_needed=10 + (len(weak_topics) * 3)
+        )
+
+        # 8. Mark trial as used for non-pro users
+        if not user.is_pro:
+            trial_key = get_diagnostic_trial_key(telegram_id)
+            await redis.set(trial_key, "1")
+
         return StudyPlanResponse(
             success=True,
-            study_plan=StudyPlanDetails(
-                summary=summary,
-                total_exams_done=exam_count,
-                overall_score_percent=round(avg_score, 1),
-                weak_topics=weak_topics,
-                daily_plan=daily_plan
-            ),
-            message=None
+            study_plan=plan_details,
+            message="Your Diagnostic Study Plan has been generated! Use this roadmap to focus your preparation."
         )
+

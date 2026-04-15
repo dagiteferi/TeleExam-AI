@@ -2,7 +2,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.api.deps import CurrentTelegramId, DbConn
+from app.api.deps import CurrentTelegramId, DbConn, RedisConn
 from app.schemas.ai import ExplainRequest, ExplainResponse, ChatRequest, ChatResponse, StudyPlanRequest, StudyPlanResponse
 from app.services.ai_service import AiService
 
@@ -13,10 +13,11 @@ router = APIRouter(prefix="/ai")
 async def explain_question(
     request: ExplainRequest,
     conn: DbConn,
+    redis: RedisConn,
     _current_telegram_id: CurrentTelegramId,
 ) -> ExplainResponse:
     return await AiService().explain_question(
-        conn, _current_telegram_id, request.question_id, request.user_answer
+        conn, redis, _current_telegram_id, request.question_id, request.user_answer
     )
 
 
@@ -24,15 +25,19 @@ async def explain_question(
 async def chat_interaction(
     request: ChatRequest,
     conn: DbConn,
+    redis: RedisConn,
     _current_telegram_id: CurrentTelegramId,
 ) -> ChatResponse:
-    return await AiService().chat(conn, _current_telegram_id, request.message, request.question_id)
+    return await AiService().chat(conn, redis, _current_telegram_id, request.message, request.question_id)
+
 
 
 @router.post("/study-plan", response_model=StudyPlanResponse)
 async def create_study_plan(
     request: StudyPlanRequest,
     conn: DbConn,
+    redis: RedisConn,
     _current_telegram_id: CurrentTelegramId,
 ) -> StudyPlanResponse:
-    return await AiService().generate_study_plan(conn, _current_telegram_id)
+    return await AiService().generate_study_plan(conn, redis, _current_telegram_id)
+
