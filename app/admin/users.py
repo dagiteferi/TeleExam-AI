@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 
 from app.admin.deps import require_admin, require_superadmin, require_permission, get_admin_db
 from app.db.postgres import db_conn
@@ -28,9 +28,39 @@ async def get_all_users(
     conn: AsyncConnection = Depends(get_admin_db),
     limit: int = 100,
     offset: int = 0,
+    search: str | None = None,
+    is_pro: bool | None = None,
+    is_banned: bool | None = None,
+    invited_by: UUID | None = None,
 ) -> list[PlatformUserResponse]:
     """Requires: view_users permission or superadmin."""
-    result = await conn.execute(select(User).limit(limit).offset(offset))
+    query = select(User)
+
+    if search:
+        try:
+            tid = int(search)
+            query = query.where(User.telegram_id == tid)
+        except ValueError:
+            search_query = f"%{search}%"
+            query = query.where(
+                or_(
+                    User.telegram_username.ilike(search_query),
+                    User.first_name.ilike(search_query),
+                    User.last_name.ilike(search_query),
+                )
+            )
+
+    if is_pro is not None:
+        query = query.where(User.is_pro == is_pro)
+
+    if is_banned is not None:
+        query = query.where(User.is_banned == is_banned)
+
+    if invited_by:
+        query = query.where(User.invited_by_user_id == invited_by)
+
+    query = query.limit(limit).offset(offset)
+    result = await conn.execute(query)
     users = result.mappings().all()
     return [PlatformUserResponse(**user) for user in users]
 

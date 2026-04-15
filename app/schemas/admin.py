@@ -67,8 +67,10 @@ class PlatformUserResponse(BaseModel):
     telegram_username: str | None = None
     first_name: str | None = None
     last_name: str | None = None
+    invited_by_user_id: UUID | None = None
     invite_count: int = 0
     is_pro: bool
+    is_full_access: bool
     plan_expiry: datetime | None = None
     is_banned: bool
     ban_reason: str | None = None
