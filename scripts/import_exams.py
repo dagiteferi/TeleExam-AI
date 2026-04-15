@@ -41,7 +41,7 @@ def compute_hash(prompt: str, choices: list[str]) -> bytes:
 
 # Configuration: Set the path to the JSON file or directory to import.
 # To import only one file, put the full path here: e.g., "data/exams/sene_2016_computer_science.json"
-TARGET_PATH = "data/exams/2017_hamle_accounting_and_finance.json"
+TARGET_PATH = "data/exams/2016_sene_nursing.json"
 
 
 async def import_exams_async(target_path: str = TARGET_PATH):
@@ -151,11 +151,13 @@ async def import_exams_async(target_path: str = TARGET_PATH):
 
                     prompt = q_data["question_text"]
                     options = q_data.get("options", {})
-                    choice_a = options.get("A", "")
-                    choice_b = options.get("B", "")
-                    choice_c = options.get("C", "")
-                    choice_d = options.get("D", "")
-                    correct_choice = q_data.get("correct_answer", "A")
+                    # Case-insensitive option lookup
+                    norm_opts = {str(k).upper(): v for k, v in options.items()}
+                    choice_a = norm_opts.get("A", "")
+                    choice_b = norm_opts.get("B", "")
+                    choice_c = norm_opts.get("C", "")
+                    choice_d = norm_opts.get("D", "")
+                    correct_choice = str(q_data.get("correct_answer", "A")).upper()
                     explanation = q_data.get("explanation", "")
                     difficulty = get_difficulty(q_data.get("difficulty", "Medium"))
                     

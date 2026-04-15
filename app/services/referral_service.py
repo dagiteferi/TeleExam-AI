@@ -12,13 +12,28 @@ class ReferralService:
         if not ref_code:
             return
         # Find the inviter who owns the ref_code
-        inviter_id = await conn.scalar(select(User.id).where(User.invite_code == ref_code))
-        if inviter_id and inviter_id != user_id:
+        result = await conn.execute(
+            select(User.id, User.telegram_id)
+            .where(User.invite_code == ref_code)
+        )
+        inviter = result.fetchone()
+        
+        if inviter and inviter.id != user_id:
+            # 1. Update the invitee's record
             await conn.execute(
                 update(User)
                 .where(User.id == user_id)
-                .values(invited_by_user_id=inviter_id)
+                .values(invited_by_user_id=inviter.id)
             )
+            
+            # 2. Increment the inviter's count
+            await conn.execute(
+                update(User)
+                .where(User.id == inviter.id)
+                .values(invite_count=User.invite_count + 1)
+            )
+            
+            # Note: We could trigger a notification here, but we'll stick to logic for now.
 
     async def credit_inviter_on_first_quiz_completion(
         self, conn: AsyncConnection, user_id: UUID

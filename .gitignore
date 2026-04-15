@@ -63,3 +63,4 @@ secrets.json
 credentials.json
 client_secret.json
 config.local.py
+scripts/*.py

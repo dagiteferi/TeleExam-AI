@@ -17,6 +17,7 @@ from app.db.redis import (
     get_active_session_key,
     get_qtoken_key,
     get_question_served_time_key,
+    get_flag_key,
 )
 from app.models.department import Department
 from app.models.course import Course
@@ -100,6 +101,28 @@ class SessionService:
                 pe_data = pe_meta.fetchone()
                 if not pe_data:
                     raise HTTPException(status_code=404, detail="Past exam not found")
+                
+                # --- Referral Enforcement Guard ---
+                user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.id == user_id))
+                user = user_row.fetchone()
+                invite_count = user.invite_count if user else 0
+                is_pro = user.is_pro if user else False
+                
+                if not is_pro and invite_count < 4:
+                    unlocked_count = invite_count + 1
+                    # Get all years for this dept
+                    avail_years_res = await conn.execute(
+                        select(PastExam.year).distinct().where(PastExam.department_id == pe_data.department_id).order_by(PastExam.year.asc())
+                    )
+                    avail_years = [r[0] for r in avail_years_res.fetchall()]
+                    allowed_years = avail_years[:unlocked_count]
+                    if pe_data.year not in allowed_years:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail={"error": {"code": "year_locked", "message": f"Support our mission! Invite {4 - invite_count} more friends to unlock the {pe_data.year} exams."}}
+                        )
+                # ----------------------------------
+
                 
                 request.course_id = pe_data.course_id
                 request.department_id = pe_data.department_id
@@ -407,7 +430,7 @@ class SessionService:
             question_id=uuid.UUID(question_uuid),
             index=current_index,
             total=int(session_data["total_questions"]),
-            prompt=armor_text(row.prompt),
+            prompt=armor_text(row.prompt, session_data["telegram_id"]),
             image_url=None, # Removed as per request
             options=[row.choice_a, row.choice_b, row.choice_c, row.choice_d],
             choice_a=row.choice_a,
@@ -448,6 +471,36 @@ class SessionService:
              raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"error": {"code": "invalid_qtoken", "message": "Token expired or invalid."}})
         
         await self.redis.delete(qtoken_key) # single-use
+        
+        # --- Behavioral Anti-Cheat: Speed Detection ---
+        served_time_key = get_question_served_time_key(str(session_id), current_index)
+        served_time_ts = await self.redis.get(served_time_key)
+        if served_time_ts:
+            response_time = datetime.datetime.now(datetime.timezone.utc).timestamp() - float(served_time_ts)
+            
+            # If answering faster than humanly possible (e.g. < 1.5 seconds)
+            SUSPICIOUS_THRESHOLD = 1.5 
+            if response_time < SUSPICIOUS_THRESHOLD:
+                user_flag_key = get_flag_key(session_data["user_id"])
+                # Increment flag count for this user
+                flags = await self.redis.incr(user_flag_key)
+                await self.redis.expire(user_flag_key, 86400 * 7) # Keep flags for 7 days
+                
+                logger.warning(
+                    "Suspicious rapid answering detected",
+                    user_id=session_data["user_id"],
+                    session_id=str(session_id),
+                    response_time=response_time,
+                    flags=flags
+                )
+                
+                # If flagged too many times, we could auto-fail or mark for review
+                if flags >= 10:
+                    # Logic for shadow-banning or flagging the entire session
+                    await self.redis.hset(session_key, "is_flagged", "true")
+
+        await self.redis.delete(served_time_key)
+        # -----------------------------------------------
 
         # Save answer
         answers = json.loads(session_data["answers"])
