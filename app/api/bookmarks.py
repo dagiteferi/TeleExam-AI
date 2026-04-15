@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncConnection
 from uuid import UUID
 
-from app.api.deps import get_db_connection, verify_telegram_secret
+from app.api.deps import get_db_conn, get_current_telegram_id
 from app.db.postgres import db_conn
 from app.schemas.bookmark import BookmarkCreateResponse, BookmarkListResponse, BookmarkResponse
 from app.models.bookmark import Bookmark
@@ -12,7 +12,6 @@ from app.models.user import User
 router = APIRouter(
     prefix="/bookmarks",
     tags=["Bookmarks"],
-    dependencies=[Depends(verify_telegram_secret)],
 )
 
 # Endpoint will be mounted at /api/bookmarks
@@ -20,8 +19,8 @@ router = APIRouter(
 @router.post("/{question_id}", response_model=BookmarkCreateResponse)
 async def toggle_bookmark_question(
     question_id: UUID,
-    telegram_id: int = Depends(verify_telegram_secret),
-    conn: AsyncConnection = Depends(get_db_connection)
+    telegram_id: int = Depends(get_current_telegram_id),
+    conn: AsyncConnection = Depends(get_db_conn)
 ):
     """
     Toggles a bookmark for a specific question (creates if it doesn't exist, deletes if it does).
@@ -62,8 +61,8 @@ async def toggle_bookmark_question(
 
 @router.get("", response_model=BookmarkListResponse)
 async def get_my_bookmarks(
-    telegram_id: int = Depends(verify_telegram_secret),
-    conn: AsyncConnection = Depends(get_db_connection)
+    telegram_id: int = Depends(get_current_telegram_id),
+    conn: AsyncConnection = Depends(get_db_conn)
 ):
     """
     Gets all bookmarks for the user.
