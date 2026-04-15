@@ -100,3 +100,18 @@ async def submit_session(
 ) -> SubmitSessionResponse:
     # This will be implemented in SessionService
     return await SessionService(redis).submit_session(conn, telegram_id, session_id)
+
+
+@router.get("/danger/reset-all")
+async def emergency_reset_all_sessions(
+    redis: Annotated[Redis, Depends(get_redis)],
+):
+    """
+    EMERGENCY ONLY: Clears all active session pointers in Redis.
+    This fixes the 404/409 deadlock for all users.
+    """
+    keys = await redis.keys("teleexam:user:*:active_session:*")
+    if keys:
+        await redis.delete(*keys)
+        return {"status": "success", "message": f"Cleared {len(keys)} active sessions."}
+    return {"status": "success", "message": "No active sessions found."}
