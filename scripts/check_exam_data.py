@@ -23,7 +23,7 @@ def compute_hash(prompt: str, choices: list[str]) -> bytes:
 # Configuration: Set the path to the JSON file or directory to check.
 # To check only one file, put the full path here: e.g., "data/exams/2017_yekatit_nursing.json"
 # Change this line at the top of scripts/check_exam_data.py
-TARGET_PATH = "data/exams/2016_sene_nursing.json"
+TARGET_PATH = "data/exams/2015_hamle_software_engineering.json"
 
 
 def validate_question(q_data: Dict[str, Any], course_name: str, q_index: int) -> List[str]:

@@ -7,6 +7,7 @@ from app.db.postgres import db_conn
 from app.schemas.bookmark import BookmarkCreateResponse, BookmarkListResponse, BookmarkResponse
 from app.models.bookmark import Bookmark
 from sqlalchemy import select, delete
+from app.models.user import User
 
 router = APIRouter(
     prefix="/bookmarks",
@@ -25,8 +26,8 @@ async def toggle_bookmark_question(
     """
     Toggles a bookmark for a specific question (creates if it doesn't exist, deletes if it does).
     """
-    from app.models.user import User
-    # Get user directly since we trust telegram_id
+    
+    
     user_result = await conn.execute(select(User.id).where(User.telegram_id == telegram_id))
     user_id = user_result.scalar_one_or_none()
     

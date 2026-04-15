@@ -19,7 +19,6 @@ Base = declarative_base()
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        # Ensure driver is asyncpg even if psycopg2 is in .env for Alembic compatibility
         async_url = settings.sqlalchemy_database_url.replace("+psycopg2", "+asyncpg")
         _engine = create_async_engine(
             async_url,
