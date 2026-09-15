@@ -22,3 +22,5 @@ class UserResponse(BaseModel):
     invite_count: int
     is_pro: bool
     plan_expiry: datetime | None = None
+    department_id: UUID | None = None  
+    department_name: str | None = None  
