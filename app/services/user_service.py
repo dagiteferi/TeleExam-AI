@@ -15,7 +15,7 @@ class UserService:
         
         try:
             # Check existence inside the transaction to determine if referral is needed
-            stmt = select(User.id).where(User.telegram_id == telegram_id)
+            stmt = select(User).where(User.telegram_id == telegram_id)
             result = await conn.execute(stmt)
             existing_user = result.scalar_one_or_none()
             is_new = existing_user is None
