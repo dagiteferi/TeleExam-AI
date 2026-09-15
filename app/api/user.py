@@ -39,3 +39,31 @@ async def upsert_user(
     
     return UserResponse(**response_data)
 
+
+
+@router.get("/invited")
+async def get_invited_users(
+    telegram_id: int = Depends(get_current_telegram_id),
+    conn: AsyncConnection = Depends(get_db_conn),
+) -> list[dict]:
+    """
+    Returns list of users invited by the current user.
+    """
+    from sqlalchemy import select
+    from app.models.user import User
+    
+    result = await conn.execute(
+        select(User.id, User.first_name, User.created_at, User.telegram_id)
+        .where(User.invited_by_user_id == telegram_id)
+        .order_by(User.created_at.desc())
+    )
+    
+    return [
+        {
+            "id": str(row.id),
+            "first_name": row.first_name,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "telegram_id": row.telegram_id
+        }
+        for row in result.fetchall()
+    ]
