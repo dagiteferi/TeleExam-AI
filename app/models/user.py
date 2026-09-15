@@ -31,8 +31,12 @@ class User(Base):
     is_banned = Column(Boolean, nullable=False, default=False)
     ban_reason = Column(Text, nullable=True)
 
+    
+    department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.datetime.now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.datetime.now, onupdate=datetime.datetime.now) # Added onupdate
 
     # Relationships
     invited_by = relationship("User", remote_side=[id], backref="invited_users") # Added relationship
+    department = relationship("Department")
