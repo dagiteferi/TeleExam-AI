@@ -13,6 +13,8 @@ class UserUpsertRequest(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
     ref_code: UUID | None = None
+    department_id: UUID | None = None
+
 
 
 class UserResponse(BaseModel):

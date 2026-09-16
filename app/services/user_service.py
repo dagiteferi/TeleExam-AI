@@ -10,20 +10,29 @@ from app.schemas.users import UserUpsertRequest
 
 
 class UserService:
+    async def get_user_by_telegram_id(self, conn: AsyncConnection, telegram_id: int) -> User | None:
+        stmt = select(User).where(User.telegram_id == telegram_id)
+        result = await conn.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def upsert_user(self, conn: AsyncConnection, *, telegram_id: int, user_data: UserUpsertRequest) -> User:
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         
         try:
-            # Check existence inside the transaction to determine if referral is needed
-            stmt = select(User.id).where(User.telegram_id == telegram_id)
+            # Check existence inside the transaction to determine if referral is needed and if department is already locked
+            stmt = select(User).where(User.telegram_id == telegram_id)
             result = await conn.execute(stmt)
-            existing_user_id = result.scalar_one_or_none()
-            is_new = existing_user_id is None
+            existing_user = result.scalar_one_or_none()
+            is_new = existing_user is None
 
             # Build upsert logic with PostgreSQL's ON CONFLICT
             insert_data = user_data.model_dump(exclude={'ref_code'})
             insert_data["telegram_id"] = telegram_id
             
+            # ONE-TIME DEPARTMENT LOCK: If existing user already has a department set, do NOT allow changing it!
+            if existing_user and existing_user.department_id is not None:
+                insert_data.pop("department_id", None)
+
             # Fields to update if conflict occurs (exclude ID and telegram_id)
             update_data = {k: v for k, v in insert_data.items() if k not in ["id", "telegram_id"] and v is not None}
 
@@ -46,7 +55,7 @@ class UserService:
                 # Conflict occurred but nothing was updated/returned (case of do_nothing)
                 # Fetch existing user explicitly
                 user_result = await conn.execute(select(User).where(User.telegram_id == telegram_id))
-                user = user_result.one()
+                user = user_result.scalar_one()
             else:
                 user = user_row
 

@@ -40,6 +40,37 @@ async def upsert_user(
     return UserResponse(**response_data)
 
 
+@router.get("/me", response_model=UserResponse)
+async def get_my_profile(
+    telegram_id: int = Depends(get_current_telegram_id),
+    conn: AsyncConnection = Depends(get_db_conn),
+) -> UserResponse:
+    user = await UserService().get_user_by_telegram_id(conn, telegram_id=telegram_id)
+    if not user:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    response_data = {
+        "user_id": user.id,
+        "telegram_id": user.telegram_id,
+        "invite_code": user.invite_code,
+        "invite_count": user.invite_count,
+        "is_pro": user.is_pro,
+        "plan_expiry": user.plan_expiry,
+        "department_id": user.department_id,
+    }
+    
+    if user.department_id:
+        from app.models.department import Department
+        dept_stmt = select(Department.name).where(Department.id == user.department_id)
+        dept_result = await conn.execute(dept_stmt)
+        dept_name = dept_result.scalar_one_or_none()
+        response_data["department_name"] = dept_name
+        
+    return UserResponse(**response_data)
+
+
+
 
 @router.get("/invited")
 async def get_invited_users(
