@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.deps import CurrentTelegramId, DbConn
+from app.api.deps import CurrentTelegramId, DbConn, RedisConn
 from app.schemas.progress import ProgressResponse
 from app.services.progress_service import ProgressService
 
@@ -13,6 +13,7 @@ router = APIRouter(prefix="/progress")
 async def get_my_progress(
     conn: DbConn,
     telegram_id: CurrentTelegramId,
+    redis: RedisConn,
 ) -> ProgressResponse:
     """
     Returns the authenticated user's personal progress dashboard.
@@ -20,4 +21,5 @@ async def get_my_progress(
     Security: Data is strictly scoped to the caller's telegram_id.
     No user can access another user's progress data.
     """
-    return await ProgressService().get_progress(conn, telegram_id)
+    return await ProgressService().get_progress(conn, telegram_id, redis=redis)
+

@@ -16,6 +16,19 @@ class WeakTopic(BaseModel):
     error_count: int
 
 
+class TopExamScore(BaseModel):
+    title: str
+    top_score_percent: float
+    total_questions: int
+
+
+class ActiveSessionInfo(BaseModel):
+    mode: str
+    title: str
+    current_question_index: int
+    total_questions: int
+
+
 class ProgressResponse(BaseModel):
     """Full progress dashboard data — private to the authenticated user."""
     total_exams_taken: int
@@ -28,3 +41,6 @@ class ProgressResponse(BaseModel):
     weak_topics: list[WeakTopic]
     # Trend: last 5 exam scores in chronological order
     recent_exam_scores: list[float]
+    top_exam_scores: list[TopExamScore] = []
+    active_session_info: ActiveSessionInfo | None = None
+

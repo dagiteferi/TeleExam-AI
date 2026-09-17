@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, String
 from sqlalchemy.ext.asyncio import AsyncConnection
+from redis.asyncio import Redis
 
 from app.models.user import User
 from app.models.exam_result import ExamResult
 from app.models.user_topic_error import UserTopicError
 from app.models.topic import Topic
 from app.models.course import Course
-from app.schemas.progress import ProgressResponse, CourseProgress, WeakTopic
+from app.models.past_exam import PastExam
+from app.schemas.progress import ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo
+from app.db.redis import get_active_session_key, get_session_key
 
 
 class ProgressService:
@@ -21,6 +24,7 @@ class ProgressService:
         self,
         conn: AsyncConnection,
         telegram_id: int,
+        redis: Redis | None = None,
     ) -> ProgressResponse:
         # 1. Resolve telegram_id -> user_id
         user_id = await conn.scalar(
@@ -38,6 +42,8 @@ class ProgressService:
                 course_breakdown=[],
                 weak_topics=[],
                 recent_exam_scores=[],
+                top_exam_scores=[],
+                active_session_info=None,
             )
 
         # 2. Overall aggregates (exam mode only for "exams taken")
@@ -106,6 +112,56 @@ class ProgressService:
         )
         recent_scores = [float(row.score_percent) for row in score_rows.fetchall()]
 
+        # 6. Top Exam Scores
+        top_rows = await conn.execute(
+            select(
+                func.coalesce(PastExam.year.cast(String) + " - " + PastExam.semester, Course.name).label("title"),
+                func.max(ExamResult.score_percent).label("top_score"),
+                func.max(ExamResult.question_count).label("total_qs"),
+            )
+            .outerjoin(PastExam, ExamResult.past_exam_id == PastExam.id)
+            .outerjoin(Course, ExamResult.course_id == Course.id)
+            .where(ExamResult.user_id == user_id, ExamResult.mode == "exam")
+            .group_by(PastExam.year, PastExam.semester, Course.name)
+            .order_by(func.max(ExamResult.score_percent).desc())
+            .limit(5)
+        )
+        top_exam_scores = [
+            TopExamScore(
+                title=row.title or "Exam",
+                top_score_percent=float(row.top_score or 0.0),
+                total_questions=int(row.total_qs or 0),
+            )
+            for row in top_rows.fetchall() if row.title
+        ]
+
+        # 7. Active / In-Progress Session details from Redis
+        active_info = None
+        if redis:
+            for m in ("exam", "practice"):
+                active_key = get_active_session_key(user_id, m)
+                active_sid = await redis.get(active_key)
+                if active_sid:
+                    sid_str = active_sid.decode() if isinstance(active_sid, bytes) else str(active_sid)
+                    sess_data = await redis.hgetall(get_session_key(sid_str))
+                    if sess_data:
+                        # Convert bytes if needed
+                        parsed = {
+                            (k.decode() if isinstance(k, bytes) else k): (v.decode() if isinstance(v, bytes) else v)
+                            for k, v in sess_data.items()
+                        }
+                        if parsed.get("status") == "in_progress":
+                            curr_idx = int(parsed.get("current_index", 0)) + 1
+                            tot_q = int(parsed.get("total_questions", 0))
+                            title = parsed.get("title") or parsed.get("course_name") or ("Past Exam" if m == "exam" else "Practice Session")
+                            active_info = ActiveSessionInfo(
+                                mode=m,
+                                title=title,
+                                current_question_index=curr_idx,
+                                total_questions=tot_q,
+                            )
+                            break
+
         return ProgressResponse(
             total_exams_taken=int(overall.exam_count or 0),
             total_practice_sessions=int(overall.practice_count or 0),
@@ -116,4 +172,7 @@ class ProgressService:
             course_breakdown=course_breakdown,
             weak_topics=weak_topics,
             recent_exam_scores=recent_scores,
+            top_exam_scores=top_exam_scores,
+            active_session_info=active_info,
         )
+
