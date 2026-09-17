@@ -635,6 +635,8 @@ class SessionService:
                 for q_id, ans in answers_dict.items() if q_id in q_map
             ])
             await conn.execute(answers_stmt)
+            
+        await conn.commit()
         
         # Mark as completed in Redis
         await self.redis.hset(session_key, "status", "completed")
