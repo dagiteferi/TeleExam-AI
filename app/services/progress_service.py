@@ -115,14 +115,13 @@ class ProgressService:
         # 6. Top Exam Scores
         top_rows = await conn.execute(
             select(
-                func.coalesce(PastExam.year.cast(String) + " - " + PastExam.semester, Course.name).label("title"),
+                Course.name.label("title"),
                 func.max(ExamResult.score_percent).label("top_score"),
                 func.max(ExamResult.question_count).label("total_qs"),
             )
-            .outerjoin(PastExam, ExamResult.past_exam_id == PastExam.id)
-            .outerjoin(Course, ExamResult.course_id == Course.id)
+            .join(Course, ExamResult.course_id == Course.id)
             .where(ExamResult.user_id == user_id, ExamResult.mode == "exam")
-            .group_by(PastExam.year, PastExam.semester, Course.name)
+            .group_by(Course.name)
             .order_by(func.max(ExamResult.score_percent).desc())
             .limit(5)
         )
@@ -134,6 +133,7 @@ class ProgressService:
             )
             for row in top_rows.fetchall() if row.title
         ]
+
 
         # 7. Active / In-Progress Session details from Redis
         active_info = None

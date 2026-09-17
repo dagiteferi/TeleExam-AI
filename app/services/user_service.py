@@ -10,19 +10,27 @@ from app.schemas.users import UserUpsertRequest
 
 
 class UserService:
-    async def get_user_by_telegram_id(self, conn: AsyncConnection, telegram_id: int) -> User | None:
-        stmt = select(User).where(User.telegram_id == telegram_id)
+    async def get_user_by_telegram_id(self, conn: AsyncConnection, telegram_id: int):
+        stmt = select(
+            User.id,
+            User.telegram_id,
+            User.invite_code,
+            User.invite_count,
+            User.is_pro,
+            User.plan_expiry,
+            User.department_id,
+        ).where(User.telegram_id == telegram_id)
         result = await conn.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.fetchone()
 
-    async def upsert_user(self, conn: AsyncConnection, *, telegram_id: int, user_data: UserUpsertRequest) -> User:
+    async def upsert_user(self, conn: AsyncConnection, *, telegram_id: int, user_data: UserUpsertRequest):
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         
         try:
             # Check existence inside the transaction to determine if referral is needed and if department is already locked
-            stmt = select(User).where(User.telegram_id == telegram_id)
+            stmt = select(User.id, User.department_id).where(User.telegram_id == telegram_id)
             result = await conn.execute(stmt)
-            existing_user = result.scalar_one_or_none()
+            existing_user = result.fetchone()
             is_new = existing_user is None
 
             # Build upsert logic with PostgreSQL's ON CONFLICT
@@ -38,35 +46,41 @@ class UserService:
 
             insert_stmt = pg_insert(User).values(**insert_data)
             
+            returning_cols = (
+                User.id,
+                User.telegram_id,
+                User.invite_code,
+                User.invite_count,
+                User.is_pro,
+                User.plan_expiry,
+                User.department_id,
+            )
+
             if not update_data:
                 # If no data to update, just do nothing on conflict
-                stmt = insert_stmt.on_conflict_do_nothing().returning(User)
+                stmt = insert_stmt.on_conflict_do_nothing().returning(*returning_cols)
             else:
                 # Standard upsert
                 stmt = insert_stmt.on_conflict_do_update(
                     index_elements=[User.telegram_id],
                     set_=update_data
-                ).returning(User)
+                ).returning(*returning_cols)
             
             result = await conn.execute(stmt)
-            user_row = result.one_or_none()
+            user_row = result.fetchone()
             
             if user_row is None:
-                # Conflict occurred but nothing was updated/returned (case of do_nothing)
                 # Fetch existing user explicitly
-                user_result = await conn.execute(select(User).where(User.telegram_id == telegram_id))
-                user = user_result.scalar_one()
-            else:
-                user = user_row
+                user_row = await self.get_user_by_telegram_id(conn, telegram_id)
 
             # Handle referral only for NEW users
-            if is_new and user_data.ref_code:
+            if is_new and user_data.ref_code and user_row:
                 from app.services.referral_service import ReferralService
-                await ReferralService().process_referral_on_user_upsert(conn, user.id, user_data.ref_code)
+                await ReferralService().process_referral_on_user_upsert(conn, user_row.id, user_data.ref_code)
             
             # Commit the transaction that was auto-started by db_conn's set_config
             await conn.commit()
-            return user
+            return user_row
         except Exception:
             await conn.rollback()
             raise
