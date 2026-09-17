@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel
+from datetime import datetime
 
 
 class CourseProgress(BaseModel):
@@ -29,6 +30,14 @@ class ActiveSessionInfo(BaseModel):
     total_questions: int
 
 
+class RecentSession(BaseModel):
+    mode: str
+    title: str
+    score_percent: float
+    question_count: int
+    submitted_at: datetime
+
+
 class ProgressResponse(BaseModel):
     """Full progress dashboard data — private to the authenticated user."""
     total_exams_taken: int
@@ -43,4 +52,5 @@ class ProgressResponse(BaseModel):
     recent_exam_scores: list[float]
     top_exam_scores: list[TopExamScore] = []
     active_session_info: ActiveSessionInfo | None = None
+    recent_sessions: list[RecentSession] = []
 

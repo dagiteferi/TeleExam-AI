@@ -10,7 +10,7 @@ from app.models.user_topic_error import UserTopicError
 from app.models.topic import Topic
 from app.models.course import Course
 from app.models.past_exam import PastExam
-from app.schemas.progress import ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo
+from app.schemas.progress import ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo, RecentSession
 from app.db.redis import get_active_session_key, get_session_key
 
 
@@ -162,6 +162,31 @@ class ProgressService:
                             )
                             break
 
+        # 8. Recent Sessions (History)
+        history_rows = await conn.execute(
+            select(
+                ExamResult.mode,
+                Course.name.label("title"),
+                ExamResult.score_percent,
+                ExamResult.question_count,
+                ExamResult.submitted_at
+            )
+            .join(Course, ExamResult.course_id == Course.id)
+            .where(ExamResult.user_id == user_id)
+            .order_by(ExamResult.submitted_at.desc())
+            .limit(5)
+        )
+        recent_sessions = [
+            RecentSession(
+                mode=row.mode,
+                title=row.title or "Unknown Course",
+                score_percent=float(row.score_percent or 0.0),
+                question_count=int(row.question_count or 0),
+                submitted_at=row.submitted_at
+            )
+            for row in history_rows.fetchall()
+        ]
+
         return ProgressResponse(
             total_exams_taken=int(overall.exam_count or 0),
             total_practice_sessions=int(overall.practice_count or 0),
@@ -174,5 +199,6 @@ class ProgressService:
             recent_exam_scores=recent_scores,
             top_exam_scores=top_exam_scores,
             active_session_info=active_info,
+            recent_sessions=recent_sessions,
         )
 

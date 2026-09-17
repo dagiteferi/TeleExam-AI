@@ -581,7 +581,8 @@ class SessionService:
                     # Record topic error for analytics
                     await analytics.record_user_topic_error(conn, uuid.UUID(session_data["user_id"]), q_map[q_id]["topic"])
         
-        score_percent = (correct_count / len(question_ids)) * 100 if question_ids else 0
+        answered_count = correct_count + wrong_count
+        score_percent = (correct_count / answered_count) * 100 if answered_count > 0 else 0
         
         # Referral logic: credit inviter if first quiz completion
         if session_data["mode"] == "quiz":
@@ -606,7 +607,7 @@ class SessionService:
             user_id=uuid.UUID(session_data["user_id"]),
             course_id=final_course_id,
             mode=session_data["mode"],
-            question_count=len(question_ids),
+            question_count=answered_count,
             correct_count=correct_count,
             wrong_count=wrong_count,
             score_percent=score_percent,
@@ -644,7 +645,7 @@ class SessionService:
         return SubmitSessionResponse(
             session_id=session_id,
             mode=session_data["mode"],
-            question_count=len(question_ids),
+            question_count=answered_count,
             correct_count=correct_count,
             wrong_count=wrong_count,
             score_percent=score_percent,
