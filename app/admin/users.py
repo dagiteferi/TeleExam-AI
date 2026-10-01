@@ -18,10 +18,15 @@ from app.schemas.admin import (
     GrantFullAccessRequest,
     GrantFullAccessResponse,
 )
+from app.core.notify import send_telegram_message
 from redis.asyncio import Redis
 
 router = APIRouter(prefix="/users")
 
+
+# ─────────────────────────────────────────────
+#  STATIC routes MUST come before /{user_id}/*
+# ─────────────────────────────────────────────
 
 @router.get("/", response_model=list[PlatformUserResponse], dependencies=[Depends(require_permission("view_users"))])
 async def get_all_users(
@@ -59,75 +64,10 @@ async def get_all_users(
     if invited_by:
         query = query.where(User.invited_by_user_id == invited_by)
 
-    query = query.limit(limit).offset(offset)
+    query = query.order_by(User.created_at.desc()).limit(limit).offset(offset)
     result = await conn.execute(query)
     users = result.mappings().all()
     return [PlatformUserResponse(**user) for user in users]
-
-
-@router.patch("/{user_id}", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("view_users"))])
-async def update_user_by_admin(
-    user_id: UUID,
-    user_update: UserAdminUpdate,
-    conn: AsyncConnection = Depends(get_admin_db),
-) -> PlatformUserResponse:
-    """Requires: view_users permission or superadmin."""
-    stmt = update(User).where(User.id == user_id).values(**user_update.model_dump(exclude_unset=True))
-    await conn.execute(stmt)
-    await conn.commit()
-
-    result = await conn.execute(select(User).where(User.id == user_id))
-    updated_user = result.mappings().one_or_none()
-    if not updated_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "user_not_found", "message": "User not found"}})
-    return PlatformUserResponse(**updated_user)
-
-
-@router.post("/{user_id}/ban", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("ban_user"))])
-async def ban_user(
-    user_id: UUID,
-    reason: str,
-    duration_hours: int | None = None,
-    conn: AsyncConnection = Depends(get_admin_db),
-    redis: Redis = Depends(get_redis_client),
-) -> PlatformUserResponse:
-    """Requires: ban_user permission or superadmin."""
-    stmt = update(User).where(User.id == user_id).values(is_banned=True, ban_reason=reason)
-    await conn.execute(stmt)
-    await conn.commit()
-
-    result = await conn.execute(select(User).where(User.id == user_id))
-    user = result.mappings().one_or_none()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "user_not_found", "message": "User not found"}})
-
-    flag_key = get_flag_key(user["telegram_id"])
-    ttl = duration_hours * 3600 if duration_hours else 24 * 3600
-    await redis.set(flag_key, "blocked", ex=ttl)
-
-    return PlatformUserResponse(**user)
-
-
-@router.post("/{user_id}/unban", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("ban_user"))])
-async def unban_user(
-    user_id: UUID,
-    conn: AsyncConnection = Depends(get_admin_db),
-    redis: Redis = Depends(get_redis_client),
-) -> PlatformUserResponse:
-    """Requires: ban_user permission or superadmin."""
-    stmt = update(User).where(User.id == user_id).values(is_banned=False, ban_reason=None)
-    await conn.execute(stmt)
-    await conn.commit()
-
-    result = await conn.execute(select(User).where(User.id == user_id))
-    user = result.mappings().one_or_none()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "user_not_found", "message": "User not found"}})
-
-    flag_key = get_flag_key(user["telegram_id"])
-    await redis.delete(flag_key)
-
-    return PlatformUserResponse(**user)
 
 
 @router.get("/flagged", response_model=list[UserFlaggedResponse], dependencies=[Depends(require_permission("view_users"))])
@@ -189,8 +129,6 @@ async def grant_full_access(
     """
     Superadmin only.
     Sets `is_full_access = True` for the user with the given `telegram_id`.
-    The user will instantly be able to access all courses and exam years
-    without needing any referral invites.
     """
     result = await conn.execute(select(User).where(User.telegram_id == body.telegram_id))
     user = result.mappings().one_or_none()
@@ -206,6 +144,13 @@ async def grant_full_access(
         .values(is_full_access=True)
     )
     await conn.commit()
+
+    await send_telegram_message(
+        body.telegram_id,
+        "🔓 <b>Full Access Granted!</b>\n\n"
+        "You have been granted <b>unlimited access</b> to all courses and exam years by an administrator.\n"
+        "You can now use all content without any invite restrictions."
+    )
 
     return GrantFullAccessResponse(
         telegram_id=body.telegram_id,
@@ -227,7 +172,6 @@ async def revoke_full_access(
     """
     Superadmin only.
     Sets `is_full_access = False` for the user with the given `telegram_id`.
-    The user returns to the normal invite-based locking system.
     """
     result = await conn.execute(select(User).where(User.telegram_id == body.telegram_id))
     user = result.mappings().one_or_none()
@@ -244,8 +188,197 @@ async def revoke_full_access(
     )
     await conn.commit()
 
+    await send_telegram_message(
+        body.telegram_id,
+        "🔒 <b>Full Access Revoked</b>\n\n"
+        "Your unlimited access has been revoked by an administrator.\n"
+        "You are now subject to the normal invite-based content locking system."
+    )
+
     return GrantFullAccessResponse(
         telegram_id=body.telegram_id,
         is_full_access=False,
         message=f"🔒 Full access revoked from telegram_id={body.telegram_id}. Normal invite locks restored.",
     )
+
+
+# ─────────────────────────────────────────────
+#  PARAMETERIZED routes  /{user_id}/*
+# ─────────────────────────────────────────────
+
+@router.patch("/{user_id}", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("view_users"))])
+async def update_user_by_admin(
+    user_id: UUID,
+    user_update: UserAdminUpdate,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> PlatformUserResponse:
+    """Requires: view_users permission or superadmin."""
+    stmt = update(User).where(User.id == user_id).values(**user_update.model_dump(exclude_unset=True))
+    await conn.execute(stmt)
+    await conn.commit()
+
+    result = await conn.execute(select(User).where(User.id == user_id))
+    updated_user = result.mappings().one_or_none()
+    if not updated_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "user_not_found", "message": "User not found"}})
+    return PlatformUserResponse(**updated_user)
+
+
+@router.post("/{user_id}/toggle-pro", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("view_users"))])
+async def toggle_user_pro(
+    user_id: UUID,
+    is_pro: bool | None = None,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> PlatformUserResponse:
+    """
+    Toggles or explicitly sets the PRO status of a user.
+    - No query param → toggle current value
+    - ?is_pro=true  → force PRO
+    - ?is_pro=false → force Free (revoke PRO)
+    Sends a Telegram notification to the user after changing their status.
+    """
+    result = await conn.execute(select(User).where(User.id == user_id))
+    user = result.mappings().one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "user_not_found", "message": "User not found"}},
+        )
+
+    new_pro_status = not user["is_pro"] if is_pro is None else is_pro
+
+    await conn.execute(update(User).where(User.id == user_id).values(is_pro=new_pro_status))
+    await conn.commit()
+
+    # Send Telegram notification
+    name = user.get("first_name") or user.get("telegram_username") or "there"
+    if new_pro_status:
+        await send_telegram_message(
+            user["telegram_id"],
+            f"⭐ <b>You're now PRO, {name}!</b>\n\n"
+            "An administrator has upgraded your account to <b>PRO</b>.\n\n"
+            "You now have access to:\n"
+            "• 🤖 <b>AI Tutor</b> — unlimited explanations & study plans\n"
+            "• 📚 <b>All Courses & Exam Years</b> — full content unlocked\n"
+            "• 🎯 <b>Unlimited Daily Questions</b>\n\n"
+            "Enjoy your PRO experience! 🎉"
+        )
+    else:
+        await send_telegram_message(
+            user["telegram_id"],
+            f"🔓 <b>PRO Access Revoked, {name}</b>\n\n"
+            "Your <b>PRO</b> subscription has been revoked by an administrator.\n"
+            "Your account has been returned to the <b>Free</b> tier.\n\n"
+            "You can still access free content and earn invites to unlock more.\n"
+            "Contact support if you believe this was a mistake."
+        )
+
+    updated_result = await conn.execute(select(User).where(User.id == user_id))
+    updated_user = updated_result.mappings().one_or_none()
+    return PlatformUserResponse(**updated_user)
+
+
+@router.post("/{user_id}/reset-access", response_model=PlatformUserResponse, dependencies=[Depends(require_superadmin)])
+async def reset_user_access(
+    user_id: UUID,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> PlatformUserResponse:
+    """
+    Superadmin only.
+    Fully resets a user's access: is_pro=False, is_full_access=False, invite_count=0.
+    Notifies the user via Telegram.
+    """
+    result = await conn.execute(select(User).where(User.id == user_id))
+    user = result.mappings().one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "user_not_found", "message": "User not found"}},
+        )
+
+    await conn.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(is_pro=False, is_full_access=False, invite_count=0)
+    )
+    await conn.commit()
+
+    name = user.get("first_name") or user.get("telegram_username") or "there"
+    await send_telegram_message(
+        user["telegram_id"],
+        f"⚠️ <b>Account Access Reset, {name}</b>\n\n"
+        "Your account access has been fully reset by an administrator:\n"
+        "• PRO status: <b>Removed</b>\n"
+        "• Full access: <b>Removed</b>\n"
+        "• Invite count: <b>Reset to 0</b>\n\n"
+        "You are now on the Free tier. Contact support if you have questions."
+    )
+
+    updated_result = await conn.execute(select(User).where(User.id == user_id))
+    updated_user = updated_result.mappings().one_or_none()
+    return PlatformUserResponse(**updated_user)
+
+
+@router.post("/{user_id}/ban", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("ban_user"))])
+async def ban_user(
+    user_id: UUID,
+    reason: str,
+    duration_hours: int | None = None,
+    conn: AsyncConnection = Depends(get_admin_db),
+    redis: Redis = Depends(get_redis_client),
+) -> PlatformUserResponse:
+    """Requires: ban_user permission or superadmin."""
+    stmt = update(User).where(User.id == user_id).values(is_banned=True, ban_reason=reason)
+    await conn.execute(stmt)
+    await conn.commit()
+
+    result = await conn.execute(select(User).where(User.id == user_id))
+    user = result.mappings().one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "user_not_found", "message": "User not found"}})
+
+    flag_key = get_flag_key(user["telegram_id"])
+    ttl = duration_hours * 3600 if duration_hours else 24 * 3600
+    await redis.set(flag_key, "blocked", ex=ttl)
+
+    name = user.get("first_name") or user.get("telegram_username") or "there"
+    duration_msg = f" for {duration_hours} hour(s)" if duration_hours else ""
+    await send_telegram_message(
+        user["telegram_id"],
+        f"🚫 <b>Account Restricted, {name}</b>\n\n"
+        f"Your account has been <b>banned{duration_msg}</b> by an administrator.\n"
+        f"Reason: <i>{reason}</i>\n\n"
+        "Contact support if you believe this was a mistake."
+    )
+
+    return PlatformUserResponse(**user)
+
+
+@router.post("/{user_id}/unban", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("ban_user"))])
+async def unban_user(
+    user_id: UUID,
+    conn: AsyncConnection = Depends(get_admin_db),
+    redis: Redis = Depends(get_redis_client),
+) -> PlatformUserResponse:
+    """Requires: ban_user permission or superadmin."""
+    stmt = update(User).where(User.id == user_id).values(is_banned=False, ban_reason=None)
+    await conn.execute(stmt)
+    await conn.commit()
+
+    result = await conn.execute(select(User).where(User.id == user_id))
+    user = result.mappings().one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "user_not_found", "message": "User not found"}})
+
+    flag_key = get_flag_key(user["telegram_id"])
+    await redis.delete(flag_key)
+
+    name = user.get("first_name") or user.get("telegram_username") or "there"
+    await send_telegram_message(
+        user["telegram_id"],
+        f"✅ <b>Account Restored, {name}!</b>\n\n"
+        "Your account restriction has been lifted by an administrator.\n"
+        "You can now use TeleExam again. Welcome back!"
+    )
+
+    return PlatformUserResponse(**user)

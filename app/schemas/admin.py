@@ -123,3 +123,147 @@ class DashboardSummaryResponse(BaseModel):
     today_dau: int
     banned_users: int
     chart_data: list[DailyActiveUser]
+
+
+# ─── Exam Management Schemas ──────────────────────────────────────────────────
+
+class DepartmentListItem(BaseModel):
+    id: UUID
+    code: str
+    name: str
+    is_active: bool
+
+class CourseListItem(BaseModel):
+    id: UUID
+    department_id: UUID
+    code: str
+    name: str
+    is_active: bool
+
+class TopicListItem(BaseModel):
+    id: UUID
+    course_id: UUID
+    code: str
+    name: str
+
+
+# ── Past Exams ──
+
+class PastExamCreate(BaseModel):
+    department_id: UUID
+    course_id: UUID | None = None
+    year: int
+    semester: str  # e.g. "1", "2", "annual"
+
+class PastExamUpdate(BaseModel):
+    department_id: UUID | None = None
+    course_id: UUID | None = None
+    year: int | None = None
+    semester: str | None = None
+
+class PastExamResponse(BaseModel):
+    id: UUID
+    department_id: UUID
+    course_id: UUID | None = None
+    year: int
+    semester: str
+    created_at: datetime
+    question_count: int = 0          # populated in the query
+    department_name: str | None = None
+    course_name: str | None = None
+
+
+# ── Questions ──
+
+class QuestionCreate(BaseModel):
+    course_id: UUID
+    topic_id: UUID
+    prompt: str
+    choice_a: str
+    choice_b: str
+    choice_c: str
+    choice_d: str
+    correct_choice: Literal["A", "B", "C", "D"]
+    difficulty: int | None = None    # 1–5
+    source: str | None = None
+    explanation_static: str | None = None
+    is_active: bool = True
+
+class QuestionUpdate(BaseModel):
+    course_id: UUID | None = None
+    topic_id: UUID | None = None
+    prompt: str | None = None
+    choice_a: str | None = None
+    choice_b: str | None = None
+    choice_c: str | None = None
+    choice_d: str | None = None
+    correct_choice: Literal["A", "B", "C", "D"] | None = None
+    difficulty: int | None = None
+    source: str | None = None
+    explanation_static: str | None = None
+    is_active: bool | None = None
+
+class QuestionAdminResponse(BaseModel):
+    id: UUID
+    course_id: UUID
+    topic_id: UUID
+    format: str
+    prompt: str
+    choice_a: str
+    choice_b: str
+    choice_c: str
+    choice_d: str
+    correct_choice: str
+    difficulty: int | None = None
+    source: str | None = None
+    explanation_static: str | None = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    course_name: str | None = None
+    topic_name: str | None = None
+
+
+# ── Exam Templates ──
+
+class ExamTemplateTopicInput(BaseModel):
+    topic_id: UUID
+    weight: float = 1.0
+
+class ExamTemplateCreate(BaseModel):
+    course_id: UUID
+    code: str
+    name: str
+    mode: Literal["exam", "quiz"]
+    question_count: int
+    duration_seconds: int | None = None
+    is_active: bool = True
+    topics: list[ExamTemplateTopicInput] = []
+
+class ExamTemplateUpdate(BaseModel):
+    course_id: UUID | None = None
+    code: str | None = None
+    name: str | None = None
+    mode: Literal["exam", "quiz"] | None = None
+    question_count: int | None = None
+    duration_seconds: int | None = None
+    is_active: bool | None = None
+    topics: list[ExamTemplateTopicInput] | None = None  # None = don't change
+
+class ExamTemplateTopicResponse(BaseModel):
+    topic_id: UUID
+    topic_name: str | None = None
+    weight: float
+
+class ExamTemplateResponse(BaseModel):
+    id: UUID
+    course_id: UUID
+    code: str
+    name: str
+    mode: str
+    question_count: int
+    duration_seconds: int | None = None
+    is_active: bool
+    created_at: datetime
+    course_name: str | None = None
+    topics: list[ExamTemplateTopicResponse] = []

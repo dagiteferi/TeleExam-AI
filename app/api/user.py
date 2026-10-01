@@ -83,9 +83,13 @@ async def get_invited_users(
     from sqlalchemy import select
     from app.models.user import User
     
+    my_user = await UserService().get_user_by_telegram_id(conn, telegram_id)
+    if not my_user:
+        return []
+    
     result = await conn.execute(
         select(User.id, User.first_name, User.created_at, User.telegram_id)
-        .where(User.invited_by_user_id == telegram_id)
+        .where(User.invited_by_user_id == my_user.id)
         .order_by(User.created_at.desc())
     )
     

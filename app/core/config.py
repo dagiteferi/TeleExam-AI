@@ -51,4 +51,6 @@ class Settings(BaseSettings):
     superadmin_email: str
     superadmin_password: str
 
+    telegram_bot_token: str | None = None  # Used for sending admin notifications to users
+
 settings = Settings()
