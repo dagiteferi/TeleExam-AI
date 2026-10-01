@@ -14,8 +14,8 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> Tuple[PydanticBaseSettingsSource, ...]:
-        # Prioritize .env file over OS environment variables
-        return (init_settings, dotenv_settings, env_settings, file_secret_settings)
+        # OS env vars take priority (Docker/HuggingFace platform vars), then .env file as fallback
+        return (init_settings, env_settings, dotenv_settings, file_secret_settings)
 
     supabase_url: str
     supabase_service_role_key: str

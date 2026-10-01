@@ -18,7 +18,7 @@ from app.core.utils import armor_text
 from redis.asyncio import Redis
 from app.db.redis import get_ai_usage_key, get_diagnostic_trial_key
 
-# Singleton: built once at startup, shared by all concurrent requests
+# Singleton: built once at startup, shared by all concurrent requests with active model
 _ai_graph = AiGraph()
 
 
@@ -146,9 +146,9 @@ class AiService:
         redis: Redis,
         telegram_id: int,
     ) -> StudyPlanResponse:
-        UserAlias = User
-        user_row = await conn.execute(select(UserAlias).where(UserAlias.telegram_id == telegram_id))
-        user = user_row.scalar_one_or_none()
+        user_stmt = select(User.id, User.is_pro).where(User.telegram_id == telegram_id)
+        user_row = await conn.execute(user_stmt)
+        user = user_row.fetchone()
         
         if not user:
             return StudyPlanResponse(success=False, message="User session invalid.")
