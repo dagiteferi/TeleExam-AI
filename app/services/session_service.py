@@ -425,6 +425,16 @@ class SessionService:
         served_time_key = get_question_served_time_key(str(session_id), current_index)
         await self.redis.set(served_time_key, datetime.datetime.now(datetime.timezone.utc).timestamp(), ex=3600)
 
+        # Check if bookmarked
+        from app.models.bookmark import Bookmark
+        import uuid as _uuid
+        bm_query = select(Bookmark.id).where(
+            Bookmark.user_id == _uuid.UUID(session_data["user_id"]),
+            Bookmark.question_id == _uuid.UUID(question_uuid)
+        )
+        bm_result = await conn.execute(bm_query)
+        is_bookmarked = bm_result.scalar_one_or_none() is not None
+
         # Build payload using the row attributes
         payload = QuestionPayload(
             question_id=uuid.UUID(question_uuid),
@@ -439,7 +449,8 @@ class SessionService:
             choice_d=row.choice_d,
             qtoken=qtoken,
             year=row.year,
-            semester=row.semester
+            semester=row.semester,
+            is_bookmarked=is_bookmarked
         )
         
         return GetQuestionResponse(session_id=session_id, question=payload)

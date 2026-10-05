@@ -11,3 +11,5 @@ from app.models.user_topic_error import UserTopicError
 from app.models.bookmark import Bookmark
 from app.models.activity_log import ActivityLog
 from app.models.admin_user import AdminUser
+from app.models.bank_account import BankAccount
+from app.models.payment_request import PaymentRequest

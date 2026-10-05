@@ -6,7 +6,7 @@ from app.api.deps import get_db_conn, get_current_telegram_id
 from app.db.postgres import db_conn
 from app.schemas.bookmark import BookmarkCreateResponse, BookmarkListResponse, BookmarkResponse
 from app.models.bookmark import Bookmark
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, insert
 from app.models.user import User
 
 router = APIRouter(
@@ -43,16 +43,20 @@ async def toggle_bookmark_question(
         if existing:
             # Delete bookmark
             await conn.execute(
-                delete(Bookmark).where(Bookmark.id == existing.id)
+                delete(Bookmark).where(Bookmark.id == existing)
             )
             await conn.commit()
             return BookmarkCreateResponse(success=True, message="Bookmark removed")
         else:
             # Create bookmark
-            new_bookmark = Bookmark(user_id=user_id, question_id=question_id)
-            conn.add(new_bookmark)
+            res = await conn.execute(
+                insert(Bookmark)
+                .values(user_id=user_id, question_id=question_id)
+                .returning(Bookmark.id)
+            )
+            new_bookmark_id = res.scalar_one()
             await conn.commit()
-            return BookmarkCreateResponse(success=True, message="Question safely bookmarked!", bookmark_id=new_bookmark.id)
+            return BookmarkCreateResponse(success=True, message="Question safely bookmarked!", bookmark_id=new_bookmark_id)
             
     except Exception as e:
         await conn.rollback()
@@ -75,9 +79,20 @@ async def get_my_bookmarks(
         raise HTTPException(status_code=404, detail="User not found")
         
     from app.models.question import Question
-    # Get bookmarks with question data
+    # Get bookmarks with question data using explicit columns for AsyncConnection
     stmt = (
-        select(Bookmark, Question)
+        select(
+            Bookmark.id,
+            Bookmark.question_id,
+            Bookmark.user_id,
+            Bookmark.created_at,
+            Question.prompt,
+            Question.choice_a,
+            Question.choice_b,
+            Question.choice_c,
+            Question.choice_d,
+            Question.correct_choice,
+        )
         .join(Question, Bookmark.question_id == Question.id)
         .where(Bookmark.user_id == user_id)
         .order_by(Bookmark.created_at.desc())
@@ -85,19 +100,7 @@ async def get_my_bookmarks(
     result = await conn.execute(stmt)
     
     items = []
-    for bookmark, question in result.all():
-        b_dict = {
-            "id": bookmark.id,
-            "question_id": bookmark.question_id,
-            "user_id": bookmark.user_id,
-            "created_at": bookmark.created_at,
-            "prompt": question.prompt,
-            "choice_a": question.choice_a,
-            "choice_b": question.choice_b,
-            "choice_c": question.choice_c,
-            "choice_d": question.choice_d,
-            "correct_choice": question.correct_choice,
-        }
-        items.append(BookmarkResponse.model_validate(b_dict))
+    for row in result.mappings().all():
+        items.append(BookmarkResponse.model_validate(dict(row)))
     
     return BookmarkListResponse(items=items)

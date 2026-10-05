@@ -9,6 +9,7 @@ from app.admin.auth import router as admin_auth_router
 from app.admin.users import router as admin_users_router
 from app.admin.stats import router as admin_stats_router
 from app.admin.exams import router as admin_exams_router
+from app.admin.payments import router as admin_payments_router
 from app.core.config import settings
 from app.core.middleware import RequestIdMiddleware, BotAuthMiddleware, RateLimitMiddleware, request_id_context, telegram_id_context
 from app.db.redis import init_redis, close_redis
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_users_router, prefix="/admin", tags=["Admin Users"])
     app.include_router(admin_stats_router, prefix="/admin", tags=["Admin Stats"])
     app.include_router(admin_exams_router, prefix="/admin", tags=["Admin Exams"])
+    app.include_router(admin_payments_router, prefix="/admin", tags=["Admin Payments"])
     return app
 
 

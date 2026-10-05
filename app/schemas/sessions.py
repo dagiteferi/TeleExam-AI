@@ -43,6 +43,7 @@ class QuestionPayload(BaseModel):
     qtoken: str
     year: int | None = None
     semester: str | None = None
+    is_bookmarked: bool = False
 
 
 class GetQuestionResponse(BaseModel):
