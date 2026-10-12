@@ -61,4 +61,13 @@ async def get_public_settings(
     """
     stmt = select(AppSetting.key, AppSetting.value).where(AppSetting.is_public == True)
     result = await conn.execute(stmt)
-    return {row.key: row.value for row in result}
+    settings_map = {}
+    for row in result:
+        val = row.value
+        if row.key == "support_contact_url" and val:
+            v_strip = val.strip()
+            if not (v_strip.startswith("http://") or v_strip.startswith("https://") or v_strip.startswith("tg://")):
+                val = f"https://t.me/{v_strip[1:]}" if v_strip.startswith("@") else f"https://t.me/{v_strip}"
+        settings_map[row.key] = val
+    return settings_map
+

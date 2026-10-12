@@ -153,18 +153,18 @@ class AiService:
         if not user:
             return StudyPlanResponse(success=False, message="User session invalid.")
 
-        # 1. Requirement: Must have finished at least one full exam
+        # 1. Paywall: Check PRO status first
+        if not user.is_pro:
+            return StudyPlanResponse(
+                success=False,
+                message="💎 Upgrade to PRO: Personalized AI Study Plans are an exclusive PRO feature! Upgrade to PRO to unlock your personalized daily study plan and performance analytics."
+            )
+
+        # 2. Requirement: Must have finished at least one full exam
         exam_stmt = select(func.count(ExamResult.id)).where(ExamResult.user_id == user.id, ExamResult.mode == "exam")
         exam_count = (await conn.execute(exam_stmt)).scalar() or 0
         if exam_count == 0:
              return StudyPlanResponse(success=False, message="📊 Data Needed: Please complete at least one full Mock Exam so the AI can analyze your weak points!")
-
-        # 2. Trial & Paywall
-        if not user.is_pro:
-            trial_key = get_diagnostic_trial_key(telegram_id)
-            has_used_trial = await redis.get(trial_key)
-            if has_used_trial:
-                return StudyPlanResponse(success=False, message="💎 Upgrade to PRO: You've used your free Diagnostic Trial. To get updated insights and advanced study plans, upgrade to PRO!")
 
         # 3. Fetch overall performance summary (aggregated across all exams)
         overall_row = await conn.execute(
