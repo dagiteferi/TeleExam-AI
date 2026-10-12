@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import datetime
+import html
+
 from typing import Annotated
 from uuid import UUID
 
@@ -9,7 +12,7 @@ from sqlalchemy import select, update, or_
 
 from app.admin.deps import require_admin, require_superadmin, require_permission, get_admin_db
 from app.db.postgres import db_conn
-from app.db.redis import get_redis_client, get_flag_key
+from app.db.redis import get_redis_client, get_flag_key, get_ban_cache_key
 from app.models.user import User
 from app.schemas.admin import (
     PlatformUserResponse,
@@ -211,9 +214,16 @@ async def update_user_by_admin(
     user_id: UUID,
     user_update: UserAdminUpdate,
     conn: AsyncConnection = Depends(get_admin_db),
+    redis: Redis = Depends(get_redis_client),
 ) -> PlatformUserResponse:
     """Requires: view_users permission or superadmin."""
-    stmt = update(User).where(User.id == user_id).values(**user_update.model_dump(exclude_unset=True))
+    values = user_update.model_dump(exclude_unset=True)
+    if "is_banned" in values:
+        # A ban set here is permanent; lifting it clears the reason and any end time
+        values["banned_until"] = None
+        if not values["is_banned"]:
+            values["ban_reason"] = None
+    stmt = update(User).where(User.id == user_id).values(**values)
     await conn.execute(stmt)
     await conn.commit()
 
@@ -221,6 +231,8 @@ async def update_user_by_admin(
     updated_user = result.mappings().one_or_none()
     if not updated_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "user_not_found", "message": "User not found"}})
+    if "is_banned" in values:
+        await redis.delete(get_ban_cache_key(updated_user["telegram_id"]))
     return PlatformUserResponse(**updated_user)
 
 
@@ -327,8 +339,14 @@ async def ban_user(
     conn: AsyncConnection = Depends(get_admin_db),
     redis: Redis = Depends(get_redis_client),
 ) -> PlatformUserResponse:
-    """Requires: ban_user permission or superadmin."""
-    stmt = update(User).where(User.id == user_id).values(is_banned=True, ban_reason=reason)
+    """Requires: ban_user permission or superadmin. No duration_hours = permanent ban."""
+    if duration_hours is not None and duration_hours <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": {"code": "invalid_duration", "message": "duration_hours must be positive"}})
+    banned_until = (
+        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=duration_hours)
+        if duration_hours else None
+    )
+    stmt = update(User).where(User.id == user_id).values(is_banned=True, ban_reason=reason, banned_until=banned_until)
     await conn.execute(stmt)
     await conn.commit()
 
@@ -340,6 +358,7 @@ async def ban_user(
     flag_key = get_flag_key(user["telegram_id"])
     ttl = duration_hours * 3600 if duration_hours else 24 * 3600
     await redis.set(flag_key, "blocked", ex=ttl)
+    await redis.delete(get_ban_cache_key(user["telegram_id"]))
 
     name = user.get("first_name") or user.get("telegram_username") or "there"
     duration_msg = f" for {duration_hours} hour(s)" if duration_hours else ""
@@ -347,7 +366,7 @@ async def ban_user(
         user["telegram_id"],
         f"🚫 <b>Account Restricted, {name}</b>\n\n"
         f"Your account has been <b>banned{duration_msg}</b> by an administrator.\n"
-        f"Reason: <i>{reason}</i>\n\n"
+        f"Reason: <i>{html.escape(reason)}</i>\n\n"
         "Contact support if you believe this was a mistake."
     )
 
@@ -361,7 +380,7 @@ async def unban_user(
     redis: Redis = Depends(get_redis_client),
 ) -> PlatformUserResponse:
     """Requires: ban_user permission or superadmin."""
-    stmt = update(User).where(User.id == user_id).values(is_banned=False, ban_reason=None)
+    stmt = update(User).where(User.id == user_id).values(is_banned=False, ban_reason=None, banned_until=None)
     await conn.execute(stmt)
     await conn.commit()
 
@@ -371,7 +390,7 @@ async def unban_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "user_not_found", "message": "User not found"}})
 
     flag_key = get_flag_key(user["telegram_id"])
-    await redis.delete(flag_key)
+    await redis.delete(flag_key, get_ban_cache_key(user["telegram_id"]))
 
     name = user.get("first_name") or user.get("telegram_username") or "there"
     await send_telegram_message(

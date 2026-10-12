@@ -63,6 +63,12 @@ def get_rate_limit_key(user_id: int, route: str) -> str:
     return f"{RATE_LIMIT_KEY_PREFIX}user:{user_id}:{route}"
 
 
+BAN_CACHE_KEY_PREFIX = "teleexam:ban:"
+BAN_CACHE_TTL_SECONDS = 60
+def get_ban_cache_key(telegram_id: int) -> str:
+    return f"{BAN_CACHE_KEY_PREFIX}{telegram_id}"
+
+
 FLAG_KEY_PREFIX = "teleexam:flag:"
 def get_flag_key(user_id: int) -> str:
     return f"{FLAG_KEY_PREFIX}{user_id}"

@@ -6,4 +6,7 @@ __pycache__
 *.h5
 data/
 .git
-.env           # optional if you want secrets handled via HF Secrets
+# secrets come from HF Secrets / platform env, never from the image
+.env
+.env.*
+!.env.example

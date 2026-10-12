@@ -1,9 +1,10 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource
 from typing import Type, Tuple
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True)
 
     @classmethod
     def settings_customise_sources(
@@ -52,5 +53,13 @@ class Settings(BaseSettings):
     superadmin_password: str
 
     telegram_bot_token: str | None = None  # Used for sending admin notifications to users
+
+    @field_validator("telegram_webhook_secret", "admin_jwt_secret")
+    @classmethod
+    def _require_strong_secret(cls, v: str) -> str:
+        # Refuse to start with a short or placeholder secret (the old example value is public)
+        if len(v) < 32 or "change_me" in v.lower():
+            raise ValueError('secret is too weak; generate one with: python3 -c "import secrets; print(secrets.token_urlsafe(48))"')
+        return v
 
 settings = Settings()

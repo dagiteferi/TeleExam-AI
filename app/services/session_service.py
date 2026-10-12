@@ -593,7 +593,13 @@ class SessionService:
                     await analytics.record_user_topic_error(conn, uuid.UUID(session_data["user_id"]), q_map[q_id]["topic"])
         
         answered_count = correct_count + wrong_count
-        score_percent = (correct_count / answered_count) * 100 if answered_count > 0 else 0
+        # Exams and quizzes are scored over every question in the session (unanswered = not correct).
+        # Practice is open-ended (a whole course bank), so it is scored over what the student answered.
+        if session_data["mode"] == "practice":
+            scored_count = answered_count
+        else:
+            scored_count = len(question_ids)
+        score_percent = round((correct_count / scored_count) * 100, 2) if scored_count > 0 else 0.0
         
         # Referral logic: credit inviter if first quiz completion
         if session_data["mode"] == "quiz":
@@ -618,7 +624,7 @@ class SessionService:
             user_id=uuid.UUID(session_data["user_id"]),
             course_id=final_course_id,
             mode=session_data["mode"],
-            question_count=answered_count,
+            question_count=scored_count,
             correct_count=correct_count,
             wrong_count=wrong_count,
             score_percent=score_percent,
@@ -658,13 +664,13 @@ class SessionService:
         return SubmitSessionResponse(
             session_id=session_id,
             mode=session_data["mode"],
-            question_count=answered_count,
+            question_count=scored_count,
             correct_count=correct_count,
             wrong_count=wrong_count,
             score_percent=score_percent,
             submitted_at=datetime.datetime.now(datetime.timezone.utc),
             score=correct_count,
-            total_questions=len(question_ids),
+            total_questions=scored_count,
             message="Keep learning!" if score_percent < 50 else "Great job!",
         )
 

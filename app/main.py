@@ -51,9 +51,11 @@ async def lifespan(_: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="TeleExam AI Backend", version="0.1.0", lifespan=lifespan)
 
-    app.add_middleware(RequestIdMiddleware)
-    app.add_middleware(BotAuthMiddleware)
+    # Starlette runs the LAST added middleware FIRST. Request order is therefore:
+    # CORS -> RequestId -> BotAuth (identifies user, blocks banned) -> RateLimit -> routes
     app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(BotAuthMiddleware)
+    app.add_middleware(RequestIdMiddleware)
 
     app.add_middleware(
         CORSMiddleware,

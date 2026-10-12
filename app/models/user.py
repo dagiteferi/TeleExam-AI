@@ -30,6 +30,7 @@ class User(Base):
 
     is_banned = Column(Boolean, nullable=False, default=False)
     ban_reason = Column(Text, nullable=True)
+    banned_until = Column(DateTime(timezone=True), nullable=True)  # NULL = permanent while is_banned
 
     
     department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=True)

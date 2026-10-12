@@ -74,6 +74,7 @@ class PlatformUserResponse(BaseModel):
     plan_expiry: datetime | None = None
     is_banned: bool
     ban_reason: str | None = None
+    banned_until: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
