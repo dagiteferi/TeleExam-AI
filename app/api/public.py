@@ -9,6 +9,7 @@ from app.api.deps import get_public_db_conn
 from app.models.department import Department
 from app.models.past_exam import PastExam
 from app.models.course import Course
+from app.models.app_setting import AppSetting
 
 router = APIRouter(prefix="/public")
 
@@ -49,3 +50,15 @@ async def get_discovery_metadata(
         "info": "Selection metadata for TeleExam AI discovery"
     }
 
+
+@router.get("/settings")
+async def get_public_settings(
+    conn: Annotated[AsyncConnection, Depends(get_public_db_conn)],
+) -> dict:
+    """
+    Returns all public app settings as a flat key-value dictionary.
+    Only settings marked is_public=True are returned.
+    """
+    stmt = select(AppSetting.key, AppSetting.value).where(AppSetting.is_public == True)
+    result = await conn.execute(stmt)
+    return {row.key: row.value for row in result}
