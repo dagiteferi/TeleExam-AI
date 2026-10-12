@@ -67,8 +67,62 @@ class PlatformUserResponse(BaseModel):
     telegram_username: str | None = None
     first_name: str | None = None
     last_name: str | None = None
+    department_id: UUID | None = None
+    department_name: str | None = None
+    department_code: str | None = None
     invited_by_user_id: UUID | None = None
+    invited_by_username: str | None = None
+    invited_by_name: str | None = None
     invite_count: int = 0
+    is_pro: bool
+    is_full_access: bool
+    plan_expiry: datetime | None = None
+    is_banned: bool
+    ban_reason: str | None = None
+    banned_until: datetime | None = None
+    exams_count: int = 0
+    avg_score: float | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class UserExamSummary(BaseModel):
+    id: UUID
+    course_name: str | None = None
+    mode: str
+    question_count: int
+    correct_count: int
+    wrong_count: int
+    score_percent: float
+    duration_seconds: int
+    submitted_at: datetime
+
+
+class InvitedUserSummary(BaseModel):
+    id: UUID
+    telegram_id: int
+    telegram_username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    is_pro: bool
+    is_full_access: bool
+    created_at: datetime
+
+
+class UserDetailResponse(BaseModel):
+    id: UUID
+    telegram_id: int
+    telegram_username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    department_id: UUID | None = None
+    department_name: str | None = None
+    department_code: str | None = None
+    invite_code: UUID | None = None
+    invite_count: int = 0
+    invited_by_user_id: UUID | None = None
+    invited_by_username: str | None = None
+    invited_by_name: str | None = None
     is_pro: bool
     is_full_access: bool
     plan_expiry: datetime | None = None
@@ -77,6 +131,14 @@ class PlatformUserResponse(BaseModel):
     banned_until: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    total_exams_taken: int = 0
+    average_score: float | None = None
+    total_questions_answered: int = 0
+    total_correct_answers: int = 0
+    total_wrong_answers: int = 0
+    recent_exams: list[UserExamSummary] = []
+    invited_users: list[InvitedUserSummary] = []
+
 
 
 class TopInviter(BaseModel):

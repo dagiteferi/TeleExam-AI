@@ -8,18 +8,26 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import select, update, or_
+from sqlalchemy import select, update, or_, and_, func
+from sqlalchemy.orm import aliased
 
 from app.admin.deps import require_admin, require_superadmin, require_permission, get_admin_db
 from app.db.postgres import db_conn
 from app.db.redis import get_redis_client, get_flag_key, get_ban_cache_key
 from app.models.user import User
+from app.models.department import Department
+from app.models.exam_result import ExamResult
+from app.models.course import Course
 from app.schemas.admin import (
     PlatformUserResponse,
     UserAdminUpdate,
     UserFlaggedResponse,
     GrantFullAccessRequest,
     GrantFullAccessResponse,
+    UserDetailResponse,
+    UserExamSummary,
+    InvitedUserSummary,
+    DepartmentListItem,
 )
 from app.core.notify import send_telegram_message
 from redis.asyncio import Redis
@@ -31,6 +39,15 @@ router = APIRouter(prefix="/users")
 #  STATIC routes MUST come before /{user_id}/*
 # ─────────────────────────────────────────────
 
+@router.get("/departments", response_model=list[DepartmentListItem], dependencies=[Depends(require_permission("view_users"))])
+async def list_user_departments(
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> list[DepartmentListItem]:
+    """Returns all departments for filtering users."""
+    result = await conn.execute(select(Department).order_by(Department.name))
+    return [DepartmentListItem(**dict(row)) for row in result.mappings()]
+
+
 @router.get("/", response_model=list[PlatformUserResponse], dependencies=[Depends(require_permission("view_users"))])
 async def get_all_users(
     conn: AsyncConnection = Depends(get_admin_db),
@@ -40,9 +57,50 @@ async def get_all_users(
     is_pro: bool | None = None,
     is_banned: bool | None = None,
     invited_by: UUID | None = None,
+    department_id: UUID | None = None,
 ) -> list[PlatformUserResponse]:
     """Requires: view_users permission or superadmin."""
-    query = select(User)
+    Inviter = aliased(User)
+
+    exam_stats_sq = (
+        select(
+            ExamResult.user_id,
+            func.count(ExamResult.id).label("exams_count"),
+            func.avg(ExamResult.score_percent).label("avg_score"),
+        )
+        .group_by(ExamResult.user_id)
+        .subquery()
+    )
+
+    query = (
+        select(
+            User.id,
+            User.telegram_id,
+            User.telegram_username,
+            User.first_name,
+            User.last_name,
+            User.department_id,
+            Department.name.label("department_name"),
+            Department.code.label("department_code"),
+            User.invited_by_user_id,
+            Inviter.telegram_username.label("invited_by_username"),
+            Inviter.first_name.label("invited_by_name"),
+            User.invite_count,
+            User.is_pro,
+            User.is_full_access,
+            User.plan_expiry,
+            User.is_banned,
+            User.ban_reason,
+            User.banned_until,
+            User.created_at,
+            User.updated_at,
+            func.coalesce(exam_stats_sq.c.exams_count, 0).label("exams_count"),
+            exam_stats_sq.c.avg_score.label("avg_score"),
+        )
+        .outerjoin(Department, User.department_id == Department.id)
+        .outerjoin(Inviter, User.invited_by_user_id == Inviter.id)
+        .outerjoin(exam_stats_sq, User.id == exam_stats_sq.c.user_id)
+    )
 
     if search:
         try:
@@ -55,8 +113,12 @@ async def get_all_users(
                     User.telegram_username.ilike(search_query),
                     User.first_name.ilike(search_query),
                     User.last_name.ilike(search_query),
+                    Department.name.ilike(search_query),
                 )
             )
+
+    if department_id is not None:
+        query = query.where(User.department_id == department_id)
 
     if is_pro is not None:
         query = query.where(User.is_pro == is_pro)
@@ -70,7 +132,16 @@ async def get_all_users(
     query = query.order_by(User.created_at.desc()).limit(limit).offset(offset)
     result = await conn.execute(query)
     users = result.mappings().all()
-    return [PlatformUserResponse(**user) for user in users]
+    return [
+        PlatformUserResponse(
+            **{
+                **dict(u),
+                "avg_score": float(u["avg_score"]) if u.get("avg_score") is not None else None,
+            }
+        )
+        for u in users
+    ]
+
 
 
 @router.get("/flagged", response_model=list[UserFlaggedResponse], dependencies=[Depends(require_permission("view_users"))])
@@ -208,6 +279,131 @@ async def revoke_full_access(
 # ─────────────────────────────────────────────
 #  PARAMETERIZED routes  /{user_id}/*
 # ─────────────────────────────────────────────
+
+@router.get("/{user_id}", response_model=UserDetailResponse, dependencies=[Depends(require_permission("view_users"))])
+async def get_user_detail(
+    user_id: UUID,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> UserDetailResponse:
+    """Returns full details, department, inviter, exam statistics, and referrals for a user."""
+    Inviter = aliased(User)
+
+    user_stmt = (
+        select(
+            User.id,
+            User.telegram_id,
+            User.telegram_username,
+            User.first_name,
+            User.last_name,
+            User.department_id,
+            Department.name.label("department_name"),
+            Department.code.label("department_code"),
+            User.invite_code,
+            User.invite_count,
+            User.invited_by_user_id,
+            Inviter.telegram_username.label("invited_by_username"),
+            Inviter.first_name.label("invited_by_name"),
+            User.is_pro,
+            User.is_full_access,
+            User.plan_expiry,
+            User.is_banned,
+            User.ban_reason,
+            User.banned_until,
+            User.created_at,
+            User.updated_at,
+        )
+        .outerjoin(Department, User.department_id == Department.id)
+        .outerjoin(Inviter, User.invited_by_user_id == Inviter.id)
+        .where(User.id == user_id)
+    )
+    result = await conn.execute(user_stmt)
+    user_row = result.mappings().one_or_none()
+    if not user_row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "user_not_found", "message": "User not found"}},
+        )
+
+    user_dict = dict(user_row)
+
+    # Aggregated Exam Statistics
+    stats_stmt = (
+        select(
+            func.count(ExamResult.id).label("total_exams"),
+            func.avg(ExamResult.score_percent).label("avg_score"),
+            func.coalesce(func.sum(ExamResult.question_count), 0).label("total_questions"),
+            func.coalesce(func.sum(ExamResult.correct_count), 0).label("total_correct"),
+            func.coalesce(func.sum(ExamResult.wrong_count), 0).label("total_wrong"),
+        )
+        .where(ExamResult.user_id == user_id)
+    )
+    stats_res = await conn.execute(stats_stmt)
+    stats_row = stats_res.mappings().one()
+
+    user_dict["total_exams_taken"] = stats_row["total_exams"] or 0
+    user_dict["average_score"] = float(stats_row["avg_score"]) if stats_row["avg_score"] is not None else None
+    user_dict["total_questions_answered"] = int(stats_row["total_questions"] or 0)
+    user_dict["total_correct_answers"] = int(stats_row["total_correct"] or 0)
+    user_dict["total_wrong_answers"] = int(stats_row["total_wrong"] or 0)
+
+    # Recent 5 Exams
+    recent_exams_stmt = (
+        select(
+            ExamResult.id,
+            Course.name.label("course_name"),
+            ExamResult.mode,
+            ExamResult.question_count,
+            ExamResult.correct_count,
+            ExamResult.wrong_count,
+            ExamResult.score_percent,
+            ExamResult.duration_seconds,
+            ExamResult.submitted_at,
+        )
+        .outerjoin(Course, ExamResult.course_id == Course.id)
+        .where(ExamResult.user_id == user_id)
+        .order_by(ExamResult.submitted_at.desc())
+        .limit(5)
+    )
+    recent_res = await conn.execute(recent_exams_stmt)
+    user_dict["recent_exams"] = [
+        UserExamSummary(
+            id=r["id"],
+            course_name=r["course_name"] or "General Practice",
+            mode=r["mode"],
+            question_count=r["question_count"],
+            correct_count=r["correct_count"],
+            wrong_count=r["wrong_count"],
+            score_percent=float(r["score_percent"]),
+            duration_seconds=r["duration_seconds"],
+            submitted_at=r["submitted_at"],
+        )
+        for r in recent_res.mappings()
+    ]
+
+    # Invited Users (up to 10)
+    invited_stmt = (
+        select(
+            User.id,
+            User.telegram_id,
+            User.telegram_username,
+            User.first_name,
+            User.last_name,
+            User.is_pro,
+            User.is_full_access,
+            User.created_at,
+        )
+        .where(User.invited_by_user_id == user_id)
+        .order_by(User.created_at.desc())
+        .limit(10)
+    )
+    invited_res = await conn.execute(invited_stmt)
+    user_dict["invited_users"] = [
+        InvitedUserSummary(**dict(r))
+        for r in invited_res.mappings()
+    ]
+
+    return UserDetailResponse(**user_dict)
+
 
 @router.patch("/{user_id}", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("view_users"))])
 async def update_user_by_admin(
