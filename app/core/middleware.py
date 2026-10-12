@@ -57,11 +57,15 @@ class BotAuthMiddleware(BaseHTTPMiddleware):
 
         telegram_secret = request.headers.get("X-Telegram-Secret")
         telegram_id_str = request.headers.get("X-Telegram-Id")
+        clean_received = telegram_secret.strip().strip('"\'') if telegram_secret else ""
+        clean_expected = settings.telegram_webhook_secret.strip().strip('"\'') if settings.telegram_webhook_secret else ""
 
-        if not telegram_secret or not hmac.compare_digest(telegram_secret.encode(), settings.telegram_webhook_secret.encode()):
+        if not clean_received or not hmac.compare_digest(clean_received.encode(), clean_expected.encode()):
             logger.warning("Unauthorized access attempt: Invalid X-Telegram-Secret",
                            path=request.url.path,
-                           ip=request.client.host)
+                           ip=request.client.host,
+                           received_len=len(clean_received),
+                           expected_len=len(clean_expected))
             return JSONResponse(
                 status_code=403,
                 content={"error": {"code": "unauthorized_bot", "message": "Invalid X-Telegram-Secret"}},

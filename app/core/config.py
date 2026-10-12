@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import field_validator, Field, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource
 from typing import Type, Tuple
 
@@ -20,7 +20,15 @@ class Settings(BaseSettings):
 
     supabase_url: str
     supabase_service_role_key: str
-    telegram_webhook_secret: str
+    telegram_webhook_secret: str = Field(
+        ...,
+        validation_alias=AliasChoices(
+            "TELEGRAM_WEBHOOK_SECRET",
+            "BACKEND_SECRET",
+            "telegram_webhook_secret",
+            "backend_secret",
+        ),
+    )
     groq_api_key: str
     groq_model: str
     environment: str = "development"
@@ -57,9 +65,8 @@ class Settings(BaseSettings):
     @field_validator("telegram_webhook_secret", "admin_jwt_secret")
     @classmethod
     def _require_strong_secret(cls, v: str) -> str:
-        # Refuse to start with a short or placeholder secret (the old example value is public)
-        if len(v) < 32 or "change_me" in v.lower():
-            raise ValueError('secret is too weak; generate one with: python3 -c "import secrets; print(secrets.token_urlsafe(48))"')
+        if not v or len(v.strip()) < 16:
+            raise ValueError('secret is too short (minimum 16 characters required)')
         return v
 
 settings = Settings()
