@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import select, func, String
 from sqlalchemy.ext.asyncio import AsyncConnection
 from redis.asyncio import Redis
@@ -9,7 +11,8 @@ from app.models.exam_result import ExamResult
 from app.models.user_topic_error import UserTopicError
 from app.models.topic import Topic
 from app.models.course import Course
-from app.models.past_exam import PastExam
+from app.models.question import Question
+from app.models.user_answer import UserAnswer
 from app.schemas.progress import ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo, RecentSession
 from app.db.redis import get_active_session_key, get_session_key
 
@@ -46,48 +49,50 @@ class ProgressService:
                 active_session_info=None,
             )
 
-        # 2. Overall aggregates (exam mode only for "exams taken")
+        # 2. Overall aggregates (exam mode only for "exams taken").
+        # "Answered" is correct + wrong: question_count also includes questions the
+        # student skipped, which would inflate the total and deflate accuracy.
         overall_row = await conn.execute(
             select(
                 func.count(ExamResult.id).filter(ExamResult.mode == "exam").label("exam_count"),
                 func.count(ExamResult.id).filter(ExamResult.mode == "practice").label("practice_count"),
                 func.sum(ExamResult.correct_count).label("total_correct"),
                 func.sum(ExamResult.wrong_count).label("total_wrong"),
-                func.sum(ExamResult.question_count).label("total_questions"),
             ).where(ExamResult.user_id == user_id)
         )
         overall = overall_row.fetchone()
 
         total_correct = int(overall.total_correct or 0)
         total_wrong = int(overall.total_wrong or 0)
-        total_questions = int(overall.total_questions or 0)
-        overall_accuracy = round((total_correct / total_questions * 100), 1) if total_questions > 0 else 0.0
+        total_answered = total_correct + total_wrong
+        overall_accuracy = round((total_correct / total_answered * 100), 1) if total_answered > 0 else 0.0
 
-        # 3. Per-course breakdown (only exam mode sessions for accuracy)
+        # 3. Per-course breakdown from the individual answers, so a past exam that
+        # spans several courses is split across them correctly.
+        answered_expr = func.count(UserAnswer.id)
+        correct_expr = func.count(UserAnswer.id).filter(UserAnswer.is_correct.is_(True))
         course_rows = await conn.execute(
             select(
                 Course.name.label("course_name"),
-                func.sum(ExamResult.correct_count).label("correct"),
-                func.sum(ExamResult.wrong_count).label("wrong"),
-                func.sum(ExamResult.question_count).label("total"),
+                answered_expr.label("total"),
+                correct_expr.label("correct"),
             )
-            .join(Course, ExamResult.course_id == Course.id)
-            .where(ExamResult.user_id == user_id)
+            .join(Question, UserAnswer.question_id == Question.id)
+            .join(Course, Question.course_id == Course.id)
+            .where(UserAnswer.user_id == user_id)
             .group_by(Course.name)
-            .order_by(func.sum(ExamResult.question_count).desc())
+            .order_by(answered_expr.desc())
         )
         course_breakdown = []
         for row in course_rows.fetchall():
             total = int(row.total or 0)
             correct = int(row.correct or 0)
-            wrong = int(row.wrong or 0)
-            accuracy = round((correct / total * 100), 1) if total > 0 else 0.0
             course_breakdown.append(CourseProgress(
                 course_name=row.course_name,
                 total_answered=total,
                 correct=correct,
-                wrong=wrong,
-                accuracy_percent=accuracy,
+                wrong=total - correct,
+                accuracy_percent=round((correct / total * 100), 1) if total > 0 else 0.0,
             ))
 
         # 4. Weak topics (top 5 by error count)
@@ -103,42 +108,64 @@ class ProgressService:
             for row in topic_rows.fetchall()
         ]
 
-        # 5. Last 5 exam scores (chronological for trend display)
-        score_rows = await conn.execute(
-            select(ExamResult.score_percent)
-            .where(ExamResult.user_id == user_id, ExamResult.mode == "exam")
-            .order_by(ExamResult.submitted_at.asc())
-            .limit(5)
-        )
-        recent_scores = [float(row.score_percent) for row in score_rows.fetchall()]
-
-        # 6. Top Exam Scores
-        top_rows = await conn.execute(
+        # 5-6, 8. Recent scores, top results and history all come from the user's
+        # results, newest first. The title saved with the result (e.g. "2016 First
+        # Exam") is preferred; older results fall back to their course name.
+        result_rows = (await conn.execute(
             select(
-                Course.name.label("title"),
-                func.max(ExamResult.score_percent).label("top_score"),
-                func.max(ExamResult.question_count).label("total_qs"),
+                ExamResult.mode,
+                ExamResult.score_percent,
+                ExamResult.question_count,
+                ExamResult.correct_count,
+                ExamResult.wrong_count,
+                ExamResult.submitted_at,
+                ExamResult.metadata_,
+                Course.name.label("course_name"),
             )
-            .join(Course, ExamResult.course_id == Course.id)
-            .where(ExamResult.user_id == user_id, ExamResult.mode == "exam")
-            .group_by(Course.name)
-            .order_by(func.max(ExamResult.score_percent).desc())
-            .limit(5)
-        )
-        top_exam_scores = [
-            TopExamScore(
-                title=row.title or "Exam",
-                top_score_percent=float(row.top_score or 0.0),
-                total_questions=int(row.total_qs or 0),
-            )
-            for row in top_rows.fetchall() if row.title
-        ]
+            .outerjoin(Course, ExamResult.course_id == Course.id)
+            .where(ExamResult.user_id == user_id)
+            .order_by(ExamResult.submitted_at.desc())
+            .limit(200)
+        )).fetchall()
 
+        def _title(row) -> str:
+            return (row.metadata_ or {}).get("title") or row.course_name or "Exam"
+
+        exam_rows = [row for row in result_rows if row.mode == "exam"]
+
+        # Last 5 exam scores, oldest -> newest for the trend display
+        recent_scores = [float(row.score_percent) for row in reversed(exam_rows[:5])]
+
+        best_by_title: dict[str, TopExamScore] = {}
+        for row in exam_rows:
+            title = _title(row)
+            score = float(row.score_percent or 0.0)
+            if title not in best_by_title or score > best_by_title[title].top_score_percent:
+                best_by_title[title] = TopExamScore(
+                    title=title,
+                    top_score_percent=score,
+                    total_questions=int(row.question_count or 0),
+                )
+        top_exam_scores = sorted(
+            best_by_title.values(), key=lambda t: t.top_score_percent, reverse=True
+        )[:5]
+
+        recent_sessions = [
+            RecentSession(
+                mode=row.mode,
+                title=_title(row),
+                score_percent=float(row.score_percent or 0.0),
+                question_count=int(row.question_count or 0),
+                answered_count=int(row.correct_count or 0) + int(row.wrong_count or 0),
+                submitted_at=row.submitted_at,
+            )
+            for row in result_rows[:5]
+        ]
 
         # 7. Active / In-Progress Session details from Redis
         active_info = None
         if redis:
-            for m in ("exam", "practice"):
+            for m in ("exam", "practice", "quiz"):
                 active_key = get_active_session_key(user_id, m)
                 active_sid = await redis.get(active_key)
                 if active_sid:
@@ -153,45 +180,21 @@ class ProgressService:
                         if parsed.get("status") == "in_progress":
                             curr_idx = int(parsed.get("current_index", 0)) + 1
                             tot_q = int(parsed.get("total_questions", 0))
-                            title = parsed.get("title") or parsed.get("course_name") or ("Past Exam" if m == "exam" else "Practice Session")
+                            title = parsed.get("title") or ("Past Exam" if m == "exam" else "Practice Session")
                             active_info = ActiveSessionInfo(
                                 mode=m,
                                 title=title,
-                                current_question_index=curr_idx,
+                                current_question_index=min(curr_idx, tot_q) if tot_q else curr_idx,
                                 total_questions=tot_q,
+                                answered_count=len(json.loads(parsed.get("answers") or "{}")),
                             )
                             break
-
-        # 8. Recent Sessions (History)
-        history_rows = await conn.execute(
-            select(
-                ExamResult.mode,
-                Course.name.label("title"),
-                ExamResult.score_percent,
-                ExamResult.question_count,
-                ExamResult.submitted_at
-            )
-            .join(Course, ExamResult.course_id == Course.id)
-            .where(ExamResult.user_id == user_id)
-            .order_by(ExamResult.submitted_at.desc())
-            .limit(5)
-        )
-        recent_sessions = [
-            RecentSession(
-                mode=row.mode,
-                title=row.title or "Unknown Course",
-                score_percent=float(row.score_percent or 0.0),
-                question_count=int(row.question_count or 0),
-                submitted_at=row.submitted_at
-            )
-            for row in history_rows.fetchall()
-        ]
 
         return ProgressResponse(
             total_exams_taken=int(overall.exam_count or 0),
             total_practice_sessions=int(overall.practice_count or 0),
             overall_accuracy_percent=overall_accuracy,
-            total_questions_answered=total_questions,
+            total_questions_answered=total_answered,
             total_correct=total_correct,
             total_wrong=total_wrong,
             course_breakdown=course_breakdown,

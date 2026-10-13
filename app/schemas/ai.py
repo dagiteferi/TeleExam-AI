@@ -15,8 +15,9 @@ class ExplainResponse(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str
-    question_id: str
+    message: str = Field(min_length=1, max_length=2000)
+    # Omitted (or the all-zero UUID older bots send) = general study chat with no question context.
+    question_id: str | None = None
 
 
 class ChatResponse(BaseModel):

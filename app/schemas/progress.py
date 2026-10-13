@@ -28,6 +28,7 @@ class ActiveSessionInfo(BaseModel):
     title: str
     current_question_index: int
     total_questions: int
+    answered_count: int = 0
 
 
 class RecentSession(BaseModel):
@@ -35,6 +36,7 @@ class RecentSession(BaseModel):
     title: str
     score_percent: float
     question_count: int
+    answered_count: int = 0
     submitted_at: datetime
 
 

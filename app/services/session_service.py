@@ -90,6 +90,7 @@ class SessionService:
         session_ttl_seconds: int = 0
         deadline_ts: float | None = None # Changed to float for timestamp
         seed = random.randint(0, 2**32 - 1) # For deterministic randomization
+        title: str | None = None  # Human-readable name shown in progress/history
 
         if request.mode == "exam":
             if request.past_exam_id:
@@ -125,6 +126,7 @@ class SessionService:
 
                 
                 request.course_id = pe_data.course_id
+                title = f"{pe_data.year} {pe_data.semester.title()} Exam"
                 request.department_id = pe_data.department_id
 
                 # Fetch all questions for this departmental exam across ALL courses in that year/semester
@@ -281,6 +283,12 @@ class SessionService:
                 detail={"error": {"code": "no_questions_found", "message": "No questions found for the selected criteria."}},
             )
 
+        if not title:
+            if request.topic_id:
+                title = await conn.scalar(select(Topic.name).where(Topic.id == request.topic_id))
+            elif request.course_id:
+                title = await conn.scalar(select(Course.name).where(Course.id == request.course_id))
+
         # 3. Create session in Redis
         session_id = str(uuid.uuid4())
         session_key = get_session_key(session_id)
@@ -303,6 +311,7 @@ class SessionService:
             "deadline_ts": deadline_ts,
             "seed": seed,
             "total_questions": total_questions,
+            "title": title,
         }
 
         # Store session data in Redis Hash
@@ -631,7 +640,7 @@ class SessionService:
             started_at=datetime.datetime.fromisoformat(session_data["start_time"]),
             submitted_at=datetime.datetime.now(datetime.timezone.utc),
             duration_seconds=int((datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(session_data["start_time"])).total_seconds()),
-            metadata_={"seed": session_data["seed"]}
+            metadata_={"seed": session_data["seed"], "title": session_data.get("title")}
         )
         
         await conn.execute(res_stmt)

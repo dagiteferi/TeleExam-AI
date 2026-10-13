@@ -5,6 +5,7 @@ import json
 
 from sqlalchemy import select, func
 from app.models.user import User
+from app.models.department import Department
 from app.models.exam_result import ExamResult
 from app.models.user_topic_error import UserTopicError
 from app.models.topic import Topic
@@ -20,6 +21,29 @@ from app.db.redis import get_ai_usage_key, get_diagnostic_trial_key
 
 # Singleton: built once at startup, shared by all concurrent requests with active model
 _ai_graph = AiGraph()
+
+
+FREE_AI_DAILY_LIMIT = 5
+
+# Older bot versions send this instead of omitting question_id for general chat.
+GENERAL_CHAT_QUESTION_ID = "00000000-0000-0000-0000-000000000000"
+
+
+async def _consume_free_ai_use(redis: Redis, usage_key: str) -> bool:
+    """Atomically uses one free AI request; False once the daily limit is reached."""
+    used = await redis.incr(usage_key)
+    if used == 1:
+        await redis.expire(usage_key, 86400)  # Reset after 24 hours
+    if used > FREE_AI_DAILY_LIMIT:
+        await redis.decr(usage_key)  # Blocked attempts don't count
+        return False
+    return True
+
+
+async def _refund_free_ai_use(redis: Redis, usage_key: str | None) -> None:
+    """Gives back a free AI request that failed before producing an answer."""
+    if usage_key:
+        await redis.decr(usage_key)
 
 
 class AiService:
@@ -42,22 +66,17 @@ class AiService:
         if not user:
              return ExplainResponse(success=False, explanation="User profile not found.")
 
+        usage_key = None
         if not user.is_pro:
             usage_key = get_ai_usage_key(telegram_id)
-            usage = await redis.get(usage_key)
-            if usage and int(usage) >= 5:
-                return ExplainResponse(success=False, explanation="⚠️ You've used your 5 free AI sessions for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
-            
-            if not usage:
-                await redis.incr(usage_key)
-                await redis.expire(usage_key, 86400) # Reset after 24 hours
-            else:
-                await redis.incr(usage_key)
+            if not await _consume_free_ai_use(redis, usage_key):
+                return ExplainResponse(success=False, explanation=f"⚠️ You've used your {FREE_AI_DAILY_LIMIT} free AI explanations for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
         # ------------------------------
 
         # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
         question_details = await fetch_question_details(question_id, telegram_id=telegram_id)
         if not question_details:
+            await _refund_free_ai_use(redis, usage_key)
             return ExplainResponse(success=False, explanation="Question context unavailable or access denied.")
 
         # Compact prompt: covers all 4 pedagogical steps in fewer tokens
@@ -74,7 +93,11 @@ class AiService:
             f"Student's Answer: {user_answer if user_answer else 'None'}"
         )
         
-        result = await self.ai_graph.invoke(prompt_message, instructions, config={"configurable": {"session_id": str(telegram_id)}})
+        try:
+            result = await self.ai_graph.invoke(prompt_message, instructions, config={"configurable": {"session_id": str(telegram_id)}})
+        except Exception:
+            await _refund_free_ai_use(redis, usage_key)
+            raise
         explanation_text = result["messages"][-1].content if result and result["messages"] else "Explanation generation failed."
 
         return ExplainResponse(
@@ -90,7 +113,7 @@ class AiService:
         redis: Redis,
         telegram_id: int,
         message: str,
-        question_id: UUID,
+        question_id: str | None,
     ) -> ChatResponse:
         # --- Referral & Usage Check ---
         user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.telegram_id == telegram_id))
@@ -99,39 +122,56 @@ class AiService:
         if not user:
              return ChatResponse(success=False, ai_response="User profile not found.")
 
+        # Follow-up questions have their own daily allowance, separate from
+        # explanations, so the explanation doesn't use up a follow-up.
+        usage_key = None
         if not user.is_pro:
-            usage_key = get_ai_usage_key(telegram_id)
-            usage = await redis.get(usage_key)
-            if usage and int(usage) >= 5:
-                return ChatResponse(success=False, ai_response="⚠️ You've used your 5 free AI sessions for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
-            
-            if not usage:
-                await redis.incr(usage_key)
-                await redis.expire(usage_key, 86400) # Reset after 24 hours
-            else:
-                await redis.incr(usage_key)
+            usage_key = f"{get_ai_usage_key(telegram_id)}:chat"
+            if not await _consume_free_ai_use(redis, usage_key):
+                return ChatResponse(success=False, ai_response=f"⚠️ You've used your {FREE_AI_DAILY_LIMIT} free AI follow-up questions for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
         # ------------------------------
 
-        # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
-        q_details = await fetch_question_details(question_id, telegram_id=telegram_id)
-        if not q_details:
-             return ChatResponse(success=False, ai_response="Question context unavailable or access denied.")
+        if not question_id or question_id == GENERAL_CHAT_QUESTION_ID:
+            # General study chat (AI Tutor from the main menu): no question context.
+            department = await conn.scalar(
+                select(Department.name)
+                .join(User, User.department_id == Department.id)
+                .where(User.telegram_id == telegram_id)
+            )
+            instructions = (
+                "You are a friendly study tutor for Ethiopian university students"
+                + (f" in the {department} department" if department else "")
+                + ". Answer the student's study question clearly and simply in 3-6 sentences, "
+                "using a short example when it helps. If the message is not about studying, "
+                "politely say you can only help with study questions."
+            )
+            full_message = message
+        else:
+            # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
+            q_details = await fetch_question_details(question_id, telegram_id=telegram_id)
+            if not q_details:
+                await _refund_free_ai_use(redis, usage_key)
+                return ChatResponse(success=False, ai_response="Question context unavailable or access denied.")
 
-        # Compact prompt: answer the specific doubt only
-        instructions = (
-            "You are an exam tutor. Answer the student's doubt directly, concisely, "
-            "based only on the provided question context. 2-4 sentences max."
-        )
+            # Compact prompt: answer the specific doubt only
+            instructions = (
+                "You are an exam tutor. Answer the student's doubt directly, concisely, "
+                "based only on the provided question context. 2-4 sentences max."
+            )
 
-        context_prefix = (
-            f"CONTEXT:\nQuestion: '{q_details['prompt']}'\n"
-            f"A: {q_details['choice_a']}, B: {q_details['choice_b']}, "
-            f"C: {q_details['choice_c']}, D: {q_details['choice_d']}\n"
-            f"Correct Answer: {q_details['correct_choice']}\n\n"
-        )
+            context_prefix = (
+                f"CONTEXT:\nQuestion: '{q_details['prompt']}'\n"
+                f"A: {q_details['choice_a']}, B: {q_details['choice_b']}, "
+                f"C: {q_details['choice_c']}, D: {q_details['choice_d']}\n"
+                f"Correct Answer: {q_details['correct_choice']}\n\n"
+            )
 
-        full_message = f"{context_prefix}USER QUESTION: {message}"
-        result = await self.ai_graph.invoke(full_message, instructions, config={"configurable": {"session_id": str(telegram_id)}})
+            full_message = f"{context_prefix}USER QUESTION: {message}"
+        try:
+            result = await self.ai_graph.invoke(full_message, instructions, config={"configurable": {"session_id": str(telegram_id)}})
+        except Exception:
+            await _refund_free_ai_use(redis, usage_key)
+            raise
         
         ai_response_text = result["messages"][-1].content if result and result["messages"] else "Response generation failed."
 
