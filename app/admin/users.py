@@ -8,16 +8,27 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import select, update, or_, and_, func
+from sqlalchemy import select, update, delete, or_, and_, func
 from sqlalchemy.orm import aliased
 
 from app.admin.deps import require_admin, require_superadmin, require_permission, get_admin_db
 from app.db.postgres import db_conn
-from app.db.redis import get_redis_client, get_flag_key, get_ban_cache_key
+from app.db.redis import (
+    get_redis_client,
+    get_flag_key,
+    get_ban_cache_key,
+    get_ai_usage_key,
+    get_diagnostic_trial_key,
+)
 from app.models.user import User
 from app.models.department import Department
 from app.models.exam_result import ExamResult
 from app.models.course import Course
+from app.models.user_answer import UserAnswer
+from app.models.user_topic_error import UserTopicError
+from app.models.bookmark import Bookmark
+from app.models.payment_request import PaymentRequest
+from app.models.activity_log import ActivityLog
 from app.schemas.admin import (
     PlatformUserResponse,
     UserAdminUpdate,
@@ -526,6 +537,51 @@ async def reset_user_access(
     updated_result = await conn.execute(select(User).where(User.id == user_id))
     updated_user = updated_result.mappings().one_or_none()
     return PlatformUserResponse(**updated_user)
+
+
+@router.delete("/{user_id}", dependencies=[Depends(require_superadmin)])
+async def delete_user(
+    user_id: UUID,
+    conn: AsyncConnection = Depends(get_admin_db),
+    redis: Redis = Depends(get_redis_client),
+):
+    """
+    Superadmin only.
+    Permanently deletes a user and all their data (answers, exam results, topic errors,
+    bookmarks, payment requests). Activity logs are kept but detached from the user,
+    and users they invited keep their accounts with the referral link cleared.
+    """
+    result = await conn.execute(select(User.telegram_id).where(User.id == user_id))
+    telegram_id = result.scalar_one_or_none()
+    if telegram_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "user_not_found", "message": "User not found"}},
+        )
+
+    # Children first — these foreign keys have no ON DELETE CASCADE
+    user_exam_ids = select(ExamResult.id).where(ExamResult.user_id == user_id)
+    await conn.execute(
+        delete(UserAnswer).where(
+            or_(UserAnswer.user_id == user_id, UserAnswer.exam_result_id.in_(user_exam_ids))
+        )
+    )
+    await conn.execute(delete(ExamResult).where(ExamResult.user_id == user_id))
+    await conn.execute(delete(UserTopicError).where(UserTopicError.user_id == user_id))
+    await conn.execute(delete(Bookmark).where(Bookmark.user_id == user_id))
+    await conn.execute(delete(PaymentRequest).where(PaymentRequest.user_id == user_id))
+    await conn.execute(update(ActivityLog).where(ActivityLog.user_id == user_id).values(user_id=None))
+    await conn.execute(update(User).where(User.invited_by_user_id == user_id).values(invited_by_user_id=None))
+    await conn.execute(delete(User).where(User.id == user_id))
+    await conn.commit()
+
+    await redis.delete(
+        get_flag_key(telegram_id),
+        get_ban_cache_key(telegram_id),
+        get_ai_usage_key(telegram_id),
+        get_diagnostic_trial_key(telegram_id),
+    )
+    return {"message": f"User telegram_id={telegram_id} deleted permanently"}
 
 
 @router.post("/{user_id}/ban", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("ban_user"))])

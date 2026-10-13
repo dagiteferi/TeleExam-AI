@@ -15,6 +15,7 @@ from app.schemas.ai import (
     ExplainResponse, ChatResponse,
     StudyPlanResponse, StudyPlanDetails, StudyTopic, StudyDay
 )
+from app.core.config import settings
 from app.core.utils import armor_text
 from redis.asyncio import Redis
 from app.db.redis import get_ai_usage_key, get_diagnostic_trial_key
@@ -24,6 +25,11 @@ _ai_graph = AiGraph()
 
 
 FREE_AI_DAILY_LIMIT = 5
+
+PRO_UPGRADE_LINE = (
+    f"Upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock all features: "
+    "unlimited AI Tutor, all past exams and personalized study plans."
+)
 
 # Older bot versions send this instead of omitting question_id for general chat.
 GENERAL_CHAT_QUESTION_ID = "00000000-0000-0000-0000-000000000000"
@@ -70,7 +76,7 @@ class AiService:
         if not user.is_pro:
             usage_key = get_ai_usage_key(telegram_id)
             if not await _consume_free_ai_use(redis, usage_key):
-                return ExplainResponse(success=False, explanation=f"⚠️ You've used your {FREE_AI_DAILY_LIMIT} free AI explanations for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
+                return ExplainResponse(success=False, explanation=f"⚠️ You've used your {FREE_AI_DAILY_LIMIT} free AI explanations for today!\n\n{PRO_UPGRADE_LINE}")
         # ------------------------------
 
         # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
@@ -128,7 +134,7 @@ class AiService:
         if not user.is_pro:
             usage_key = f"{get_ai_usage_key(telegram_id)}:chat"
             if not await _consume_free_ai_use(redis, usage_key):
-                return ChatResponse(success=False, ai_response=f"⚠️ You've used your {FREE_AI_DAILY_LIMIT} free AI follow-up questions for today!\n\nTo continue using the AI Tutor fully, please upgrade to PRO by paying 200 birr.")
+                return ChatResponse(success=False, ai_response=f"⚠️ You've used your {FREE_AI_DAILY_LIMIT} free AI follow-up questions for today!\n\n{PRO_UPGRADE_LINE}")
         # ------------------------------
 
         if not question_id or question_id == GENERAL_CHAT_QUESTION_ID:
@@ -197,7 +203,7 @@ class AiService:
         if not user.is_pro:
             return StudyPlanResponse(
                 success=False,
-                message="💎 Upgrade to PRO: Personalized AI Study Plans are an exclusive PRO feature! Upgrade to PRO to unlock your personalized daily study plan and performance analytics."
+                message=f"💎 Upgrade to PRO: Personalized AI Study Plans are an exclusive PRO feature!\n\n{PRO_UPGRADE_LINE}"
             )
 
         # 2. Requirement: Must have finished at least one full exam

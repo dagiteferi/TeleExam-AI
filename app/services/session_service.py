@@ -120,7 +120,7 @@ class SessionService:
                     if pe_data.year not in allowed_years:
                         raise HTTPException(
                             status_code=status.HTTP_403_FORBIDDEN,
-                            detail={"error": {"code": "year_locked", "message": f"Support our mission! Invite {4 - invite_count} more friends to unlock the {pe_data.year} exams."}}
+                            detail={"error": {"code": "year_locked", "message": f"Support our mission! Invite {4 - invite_count} more friends to unlock the {pe_data.year} exams, or upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock everything."}}
                         )
                 # ----------------------------------
 

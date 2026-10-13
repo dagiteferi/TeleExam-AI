@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     DEFAULT_PRACTICE_TTL_SECONDS: int = 86400
     DEFAULT_QUIZ_TTL_SECONDS: int = 1800
     DEFAULT_QUIZ_QUESTION_COUNT: int = 5
+
+    # Price of PRO, shown in every upgrade message. One payment unlocks all features.
+    PRO_PRICE_BIRR: int = 300
     DEFAULT_COMPLETED_SESSION_TTL_SECONDS: int = 3600
 
     QTOKEN_TTL_SECONDS: int = 300
