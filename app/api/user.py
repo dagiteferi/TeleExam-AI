@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.api.deps import get_current_telegram_id, get_db_conn
 from app.schemas.users import UserUpsertRequest, UserResponse # Updated import
 from app.services.user_service import UserService
+from app.core.utils import display_name
 
 router = APIRouter(prefix="/users")
 
@@ -88,7 +89,7 @@ async def get_invited_users(
         return []
     
     result = await conn.execute(
-        select(User.id, User.first_name, User.created_at, User.telegram_id)
+        select(User.id, User.first_name, User.last_name, User.telegram_username, User.created_at, User.telegram_id)
         .where(User.invited_by_user_id == my_user.id)
         .order_by(User.created_at.desc())
     )
@@ -97,6 +98,8 @@ async def get_invited_users(
         {
             "id": str(row.id),
             "first_name": row.first_name,
+            "last_name": row.last_name,
+            "full_name": display_name(row, fallback="User"),
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "telegram_id": row.telegram_id
         }

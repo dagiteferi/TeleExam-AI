@@ -30,6 +30,7 @@ from app.schemas.admin import (
     DepartmentListItem,
 )
 from app.core.notify import send_telegram_message
+from app.core.utils import display_name
 from redis.asyncio import Redis
 
 router = APIRouter(prefix="/users")
@@ -459,7 +460,7 @@ async def toggle_user_pro(
     await conn.commit()
 
     # Send Telegram notification
-    name = user.get("first_name") or user.get("telegram_username") or "there"
+    name = display_name(user)
     if new_pro_status:
         await send_telegram_message(
             user["telegram_id"],
@@ -511,7 +512,7 @@ async def reset_user_access(
     )
     await conn.commit()
 
-    name = user.get("first_name") or user.get("telegram_username") or "there"
+    name = display_name(user)
     await send_telegram_message(
         user["telegram_id"],
         f"⚠️ <b>Account Access Reset, {name}</b>\n\n"
@@ -556,7 +557,7 @@ async def ban_user(
     await redis.set(flag_key, "blocked", ex=ttl)
     await redis.delete(get_ban_cache_key(user["telegram_id"]))
 
-    name = user.get("first_name") or user.get("telegram_username") or "there"
+    name = display_name(user)
     duration_msg = f" for {duration_hours} hour(s)" if duration_hours else ""
     await send_telegram_message(
         user["telegram_id"],
@@ -588,7 +589,7 @@ async def unban_user(
     flag_key = get_flag_key(user["telegram_id"])
     await redis.delete(flag_key, get_ban_cache_key(user["telegram_id"]))
 
-    name = user.get("first_name") or user.get("telegram_username") or "there"
+    name = display_name(user)
     await send_telegram_message(
         user["telegram_id"],
         f"✅ <b>Account Restored, {name}!</b>\n\n"

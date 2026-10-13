@@ -14,6 +14,7 @@ from app.models.payment_request import PaymentRequest
 from app.models.user import User
 from app.schemas.payment import BankAccountCreate, BankAccountUpdate, BankAccountResponse, PaymentRequestResponse
 from app.core.notify import send_telegram_message
+from app.core.utils import display_name
 
 router = APIRouter(prefix="/payments")
 
@@ -147,7 +148,7 @@ async def approve_payment_request(
     # 4. Notify user
     user_result = await conn.execute(select(User).where(User.id == user_id))
     user = user_result.mappings().one()
-    name = user.get("first_name") or user.get("telegram_username") or "there"
+    name = display_name(user)
 
     await send_telegram_message(
         user["telegram_id"],
@@ -188,7 +189,7 @@ async def reject_payment_request(
     # Notify user
     user_result = await conn.execute(select(User).where(User.id == pr["user_id"]))
     user = user_result.mappings().one()
-    name = user.get("first_name") or user.get("telegram_username") or "there"
+    name = display_name(user)
 
     await send_telegram_message(
         user["telegram_id"],

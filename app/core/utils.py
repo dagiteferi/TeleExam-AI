@@ -43,3 +43,10 @@ def armor_text(text: str | None, user_id: str | int | None = None) -> str:
     
     return "\u200b".join(list(text))
 
+
+
+def display_name(user, fallback: str = "there") -> str:
+    """Full name (first + last) of a user row/mapping, falling back to username."""
+    get = user.get if hasattr(user, "get") else lambda k: getattr(user, k, None)
+    full = " ".join(p.strip() for p in (get("first_name"), get("last_name")) if p and p.strip())
+    return full or get("telegram_username") or fallback
