@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from sqlalchemy import Column, DateTime, String, ForeignKey
+from sqlalchemy import Column, DateTime, String, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -18,7 +18,8 @@ class PaymentRequest(Base):
     
     screenshot_url = Column(String(500), nullable=False)
     status = Column(String(50), nullable=False, default="pending")  # pending, approved, rejected
-    
+    rejection_reason = Column(Text, nullable=True)  # shown to the user when rejected
+
     # Track which admin approved or rejected it
     admin_id = Column(UUID(as_uuid=True), ForeignKey("admin_users.id"), nullable=True)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+
 from typing import Annotated
 from uuid import UUID
 
@@ -136,7 +138,7 @@ async def approve_payment_request(
     await conn.execute(
         update(PaymentRequest)
         .where(PaymentRequest.id == request_id)
-        .values(status="approved", updated_at=now)
+        .values(status="approved", rejection_reason=None, updated_at=now)
     )
 
     # 3. Upgrade user to PRO
@@ -166,9 +168,11 @@ async def approve_payment_request(
 @router.post("/requests/{request_id}/reject", response_model=PaymentRequestResponse)
 async def reject_payment_request(
     request_id: UUID,
+    reason: str | None = None,
     admin: dict = Depends(require_superadmin),
     conn: AsyncConnection = Depends(get_admin_db),
 ) -> PaymentRequestResponse:
+    """Optional `reason` is stored on the request and sent to the user in the Telegram rejection message."""
     import datetime
     result = await conn.execute(select(PaymentRequest).where(PaymentRequest.id == request_id))
     pr = result.mappings().one_or_none()
@@ -178,11 +182,12 @@ async def reject_payment_request(
     if pr["status"] == "rejected":
         raise HTTPException(status_code=400, detail="Already rejected")
 
+    reason = (reason or "").strip()[:500]
     now = datetime.datetime.utcnow()
     await conn.execute(
         update(PaymentRequest)
         .where(PaymentRequest.id == request_id)
-        .values(status="rejected", updated_at=now)
+        .values(status="rejected", rejection_reason=reason or None, updated_at=now)
     )
     await conn.commit()
 
@@ -190,11 +195,13 @@ async def reject_payment_request(
     user_result = await conn.execute(select(User).where(User.id == pr["user_id"]))
     user = user_result.mappings().one()
     name = display_name(user)
+    reason_msg = f"Reason: <i>{html.escape(reason)}</i>\n\n" if reason else ""
 
     await send_telegram_message(
         user["telegram_id"],
         f"❌ <b>Payment Rejected</b>\n\n"
         f"Sorry {name}, we could not verify your payment screenshot.\n"
+        f"{reason_msg}"
         "Your request has been rejected. If you believe this is a mistake, please try submitting a clearer screenshot or contact support."
     )
 

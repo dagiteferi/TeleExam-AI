@@ -30,6 +30,7 @@ class PaymentRequestResponse(BaseModel):
     user_id: UUID
     screenshot_url: str
     status: str
+    rejection_reason: Optional[str] = None
     admin_id: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime
