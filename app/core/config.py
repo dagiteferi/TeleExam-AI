@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     superadmin_password: str
 
     telegram_bot_token: str | None = None  # Used for sending admin notifications to users
+    # If set, notifications are relayed through the bot (e.g. https://<bot>/internal/notify)
+    # instead of calling api.telegram.org directly — needed on Hugging Face, which blocks Telegram.
+    bot_notify_url: str | None = None
 
     @field_validator("telegram_webhook_secret", "admin_jwt_secret")
     @classmethod
