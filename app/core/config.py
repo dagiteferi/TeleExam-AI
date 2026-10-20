@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     # instead of calling api.telegram.org directly — needed on Hugging Face, which blocks Telegram.
     bot_notify_url: str | None = None
 
+    @property
+    def telegram_bot_id(self) -> int | None:
+        """Numeric id of this backend's bot (the part of TELEGRAM_BOT_TOKEN before ':')."""
+        token = (self.telegram_bot_token or "").strip()
+        bot_id = token.split(":", 1)[0]
+        return int(bot_id) if bot_id.isdigit() else None
+
     @field_validator("telegram_webhook_secret", "admin_jwt_secret")
     @classmethod
     def _require_strong_secret(cls, v: str) -> str:

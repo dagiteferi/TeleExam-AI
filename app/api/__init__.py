@@ -12,6 +12,7 @@ from app.api.public import router as public_router
 from app.api.progress import router as progress_router
 from app.api.bookmarks import router as bookmarks_router
 from app.api.payments import router as payments_router
+from app.api.announcements import router as announcements_router
 
 # Authenticated API (Requires Bot Headers)
 api_router = APIRouter(
@@ -26,6 +27,7 @@ api_router.include_router(questions_router, tags=["discovery"])
 api_router.include_router(progress_router, tags=["progress"])
 api_router.include_router(bookmarks_router, tags=["bookmarks"])
 api_router.include_router(payments_router, tags=["payments"])
+api_router.include_router(announcements_router, tags=["announcements"])
 
 # Public API (No Bot Headers)
 public_api_router = APIRouter(prefix="/api")

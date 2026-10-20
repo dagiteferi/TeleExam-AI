@@ -14,3 +14,4 @@ from app.models.admin_user import AdminUser
 from app.models.bank_account import BankAccount
 from app.models.payment_request import PaymentRequest
 from app.models.app_setting import AppSetting
+from app.models.announcement import Announcement, AnnouncementDelivery
