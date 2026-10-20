@@ -39,6 +39,22 @@ async def _send_via_bot_relay(telegram_id: int, text: str, refresh_menu: bool) -
         return False
 
 
+async def wake_announcement_sender() -> None:
+    """
+    Tells the bot to start sending announcements now instead of at its next check.
+    Uses the relay's host (BOT_NOTIFY_URL). Best effort: the bot checks regularly anyway.
+    """
+    if not settings.bot_notify_url:
+        return
+    url = settings.bot_notify_url.split("/internal/", 1)[0] + "/internal/announcements/wake"
+    try:
+        # Generous timeout: a sleeping bot host (e.g. Render free tier) can take ~50s to wake up
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            await client.post(url, headers={"X-Telegram-Secret": settings.telegram_webhook_secret})
+    except Exception as exc:
+        logger.warning(f"Could not wake the announcement sender: {exc!r}")
+
+
 async def send_telegram_message(telegram_id: int, text: str, *, refresh_menu: bool = False) -> bool:
     """
     Sends a Telegram message to a user via the Bot HTTP API.

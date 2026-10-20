@@ -57,6 +57,19 @@ class AnnouncementResponse(BaseModel):
     cancelled_count: int = 0
 
 
+class DeliveryRow(BaseModel):
+    """One recipient of an announcement, for the admin's delivery details."""
+    user_id: UUID
+    name: str
+    telegram_username: str | None = None
+    telegram_id: int
+    status: str  # pending, sent, failed, cancelled
+    attempts: int
+    last_attempt_at: datetime | None = None
+    sent_at: datetime | None = None
+    error: str | None = None
+
+
 # ── Bot delivery queue ───────────────────────────────────────────────────────
 
 class PendingDelivery(BaseModel):

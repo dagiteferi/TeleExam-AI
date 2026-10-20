@@ -4,12 +4,13 @@ import datetime
 import uuid
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, insert, literal, select, update
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlalchemy import case, func, insert, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.admin.deps import get_admin_db, require_superadmin
 from app.core.config import settings
+from app.core.notify import wake_announcement_sender
 from app.core.utils import display_name
 from app.models.announcement import Announcement, AnnouncementDelivery
 from app.models.department import Department
@@ -19,6 +20,7 @@ from app.schemas.announcement import (
     AnnouncementCreate,
     AnnouncementPreview,
     AnnouncementResponse,
+    DeliveryRow,
 )
 from app.services.announcement_service import audience_filter
 
@@ -54,6 +56,7 @@ async def preview_announcement(
 @router.post("", response_model=AnnouncementResponse)
 async def create_announcement(
     body: AnnouncementCreate,
+    background_tasks: BackgroundTasks,
     admin: dict = Depends(require_superadmin),
     conn: AsyncConnection = Depends(get_admin_db),
 ) -> AnnouncementResponse:
@@ -104,6 +107,8 @@ async def create_announcement(
         update(Announcement).where(Announcement.id == announcement_id).values(recipient_count=recipient_count)
     )
     await conn.commit()
+    # Start delivering right away (after the response, so the admin isn't kept waiting).
+    background_tasks.add_task(wake_announcement_sender)
     return (await _list(conn, announcement_id=announcement_id))[0]
 
 
@@ -114,6 +119,65 @@ async def list_announcements(
 ) -> list[AnnouncementResponse]:
     """Recent announcements with how many were sent, are waiting, or failed."""
     return await _list(conn, limit=min(limit, 200))
+
+
+@router.get("/{announcement_id}/deliveries", response_model=list[DeliveryRow])
+async def list_deliveries(
+    announcement_id: UUID,
+    status: str | None = None,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> list[DeliveryRow]:
+    """Every recipient and what happened: waiting and failed first, so problems are easy to spot."""
+    exists = await conn.scalar(
+        select(Announcement.id).where(
+            Announcement.id == announcement_id,
+            Announcement.bot_id.is_not_distinct_from(settings.telegram_bot_id),
+        )
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+
+    order = case(
+        (AnnouncementDelivery.status == "pending", 0),
+        (AnnouncementDelivery.status == "failed", 1),
+        (AnnouncementDelivery.status == "cancelled", 2),
+        else_=3,
+    )
+    query = (
+        select(
+            AnnouncementDelivery.user_id,
+            AnnouncementDelivery.status,
+            AnnouncementDelivery.attempts,
+            AnnouncementDelivery.last_attempt_at,
+            AnnouncementDelivery.sent_at,
+            AnnouncementDelivery.error,
+            User.first_name,
+            User.last_name,
+            User.telegram_username,
+            User.telegram_id,
+        )
+        .join(User, AnnouncementDelivery.user_id == User.id)
+        .where(AnnouncementDelivery.announcement_id == announcement_id)
+        .order_by(order, User.first_name)
+    )
+    if status:
+        query = query.where(AnnouncementDelivery.status == status)
+
+    rows = (await conn.execute(query)).mappings().all()
+    return [
+        DeliveryRow(
+            user_id=row["user_id"],
+            name=display_name(row, fallback=str(row["telegram_id"])),
+            telegram_username=row["telegram_username"],
+            telegram_id=row["telegram_id"],
+            status=row["status"],
+            attempts=row["attempts"],
+            last_attempt_at=row["last_attempt_at"],
+            sent_at=row["sent_at"],
+            error=row["error"],
+        )
+        for row in rows
+    ]
 
 
 @router.post("/{announcement_id}/cancel", response_model=AnnouncementResponse)
