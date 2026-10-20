@@ -49,8 +49,10 @@ class Settings(BaseSettings):
     DEFAULT_QUIZ_TTL_SECONDS: int = 1800
     DEFAULT_QUIZ_QUESTION_COUNT: int = 5
 
-    # Price of PRO, shown in every upgrade message. One payment unlocks all features.
-    PRO_PRICE_BIRR: int = 300
+    # Prices in Birr, set in .env (must match the bot's values).
+    # PRO unlocks all features; the dual fee unlocks a second department for PRO users.
+    PRO_PRICE_BIRR: int
+    DUAL_DEPT_PRICE_BIRR: int
     DEFAULT_COMPLETED_SESSION_TTL_SECONDS: int = 3600
 
     QTOKEN_TTL_SECONDS: int = 300

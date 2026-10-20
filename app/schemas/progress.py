@@ -42,6 +42,8 @@ class RecentSession(BaseModel):
 
 class ProgressResponse(BaseModel):
     """Full progress dashboard data — private to the authenticated user."""
+    # Department the numbers belong to (dual-degree students switch between two)
+    department_name: str | None = None
     total_exams_taken: int
     total_practice_sessions: int
     overall_accuracy_percent: float

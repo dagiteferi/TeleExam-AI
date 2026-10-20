@@ -12,7 +12,7 @@ from app.models.past_exam import PastExam, PastExamQuestion
 from app.models.course import Course
 from app.models.topic import Topic
 from app.models.department import Department
-from app.models.user import User
+from app.services.access_service import AccessService
 
 
 class QuestionService:
@@ -102,28 +102,20 @@ class QuestionService:
         query = query.distinct().order_by(Course.name.asc())
         result = await conn.execute(query)
         courses = [{"id": row.id, "name": row.name, "department_id": row.department_id} for row in result]
-        
-        # Determine user access level
-        invite_count = 0
-        is_pro = False
-        is_full_access = False
-        if telegram_id:
-            user_row = await conn.execute(
-                select(User.invite_count, User.is_pro, User.is_full_access)
-                .where(User.telegram_id == telegram_id)
-            )
-            user = user_row.fetchone()
-            if user:
-                invite_count = user.invite_count
-                is_pro = user.is_pro
-                is_full_access = user.is_full_access
+
+        access = await AccessService.get_by_telegram_id(conn, telegram_id)
+        if department_id and access and not access.can_use_department(department_id):
+            return []
+
+        invite_count = access.invite_count if access else 0
+        fully_unlocked = bool(access and access.fully_unlocks(department_id))
 
         # Calculate limits
         total_courses = len(courses)
         base_unlocked = max(1, total_courses // 4) # 25% free (at least 1)
 
-        # Admin-granted full access, PRO, or 4+ invites → unlock everything
-        if is_full_access or is_pro or invite_count >= 4:
+        # Admin-granted full access, PRO (primary), dual fee (secondary), or 4+ invites → unlock everything
+        if fully_unlocked or invite_count >= 4:
             unlocked_count = total_courses
         else:
             # 4 invites unlocks the remaining 75%.
@@ -149,23 +141,15 @@ class QuestionService:
 
     async def get_exams_by_department(self, conn: AsyncConnection, department_id: uuid.UUID, telegram_id: int | None = None) -> list[dict]:
         """List available years and semesters for a specific department (deduplicated)."""
-        # Fetch user stats to determine unlocked tiers
-        invite_count = 0
-        is_pro = False
-        is_full_access = False
-        if telegram_id:
-            user_row = await conn.execute(
-                select(User.invite_count, User.is_pro, User.is_full_access)
-                .where(User.telegram_id == telegram_id)
-            )
-            user = user_row.fetchone()
-            if user:
-                invite_count = user.invite_count
-                is_pro = user.is_pro
-                is_full_access = user.is_full_access
+        access = await AccessService.get_by_telegram_id(conn, telegram_id)
+        if access and not access.can_use_department(department_id):
+            return []
 
-        # Admin-granted full access, PRO, or 4+ invites → unlock all years
-        if is_full_access or is_pro or invite_count >= 4:
+        invite_count = access.invite_count if access else 0
+        fully_unlocked = bool(access and access.fully_unlocks(department_id))
+
+        # Admin-granted full access, PRO (primary), dual fee (secondary), or 4+ invites → unlock all years
+        if fully_unlocked or invite_count >= 4:
             unlocked_count = 999
         else:
             unlocked_count = invite_count + 1

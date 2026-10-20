@@ -31,6 +31,11 @@ class PaymentRequestResponse(BaseModel):
     screenshot_url: str
     status: str
     rejection_reason: Optional[str] = None
+    kind: str = "pro"  # "pro" or "dual_department"
+    target_department_id: Optional[UUID] = None
+    # Filled in for the admin list so a dual payment is easy to tell apart
+    target_department_name: Optional[str] = None
+    amount_birr: Optional[int] = None
     admin_id: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime

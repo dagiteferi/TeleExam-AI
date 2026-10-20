@@ -4,7 +4,7 @@ import datetime
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -14,6 +14,7 @@ from app.models.bank_account import BankAccount
 from app.models.payment_request import PaymentRequest
 from app.models.user import User
 from app.schemas.payment import BankAccountResponse, PaymentRequestResponse
+from app.core.config import settings
 from app.db.supabase import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -33,9 +34,13 @@ async def get_active_banks(
     return [BankAccountResponse(**b) for b in banks]
 
 
+VALID_PAYMENT_KINDS = {"pro", "dual_department"}
+
+
 @router.post("/submit", response_model=PaymentRequestResponse)
 async def submit_payment_request(
     file: UploadFile = File(...),
+    kind: str = Form("pro"),
     conn: AsyncConnection = Depends(get_db_conn),
     telegram_id: str = Depends(telegram_id_header),
 ) -> PaymentRequestResponse:
@@ -47,14 +52,34 @@ async def submit_payment_request(
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid Telegram ID")
 
+    kind = (kind or "pro").strip().lower()
+    if kind not in VALID_PAYMENT_KINDS:
+        raise HTTPException(status_code=400, detail="Invalid payment kind")
+
     # 1. Verify user
     user_result = await conn.execute(select(User).where(User.telegram_id == tg_id))
     user = user_result.mappings().one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user["is_pro"]:
-        raise HTTPException(status_code=400, detail="User is already PRO")
+    target_department_id = None
+    if kind == "pro":
+        if user["is_pro"]:
+            raise HTTPException(status_code=400, detail="User is already PRO")
+    else:
+        if not user["is_pro"] and not user.get("is_full_access"):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr before paying "
+                    f"{settings.DUAL_DEPT_PRICE_BIRR} Birr to unlock a second department."
+                ),
+            )
+        if not user.get("secondary_department_id"):
+            raise HTTPException(status_code=400, detail="Choose a second department before submitting the dual payment.")
+        if user.get("secondary_department_unlocked"):
+            raise HTTPException(status_code=400, detail="Second department is already unlocked")
+        target_department_id = user["secondary_department_id"]
 
     # 2. Upload to Supabase Storage
     try:
@@ -86,6 +111,8 @@ async def submit_payment_request(
             user_id=user["id"],
             screenshot_url=public_url,
             status="pending",
+            kind=kind,
+            target_department_id=target_department_id,
             created_at=now,
             updated_at=now,
         )

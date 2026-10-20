@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import select, func, String
+from sqlalchemy import select, func, String, true
 from sqlalchemy.ext.asyncio import AsyncConnection
 from redis.asyncio import Redis
 
@@ -13,6 +13,8 @@ from app.models.topic import Topic
 from app.models.course import Course
 from app.models.question import Question
 from app.models.user_answer import UserAnswer
+from app.models.department import Department
+from app.services.access_service import AccessService
 from app.schemas.progress import ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo, RecentSession
 from app.db.redis import get_active_session_key, get_session_key
 
@@ -49,6 +51,12 @@ class ProgressService:
                 active_session_info=None,
             )
 
+        # Dual-degree students see progress for the department they are studying now.
+        access = await AccessService.get_by_user_id(conn, user_id)
+        dept_id = access.effective_department_id if access else None
+        in_dept = (Course.department_id == dept_id) if dept_id else true()
+        department_name = await conn.scalar(select(Department.name).where(Department.id == dept_id)) if dept_id else None
+
         # 2. Overall aggregates (exam mode only for "exams taken").
         # "Answered" is correct + wrong: question_count also includes questions the
         # student skipped, which would inflate the total and deflate accuracy.
@@ -58,7 +66,9 @@ class ProgressService:
                 func.count(ExamResult.id).filter(ExamResult.mode == "practice").label("practice_count"),
                 func.sum(ExamResult.correct_count).label("total_correct"),
                 func.sum(ExamResult.wrong_count).label("total_wrong"),
-            ).where(ExamResult.user_id == user_id)
+            )
+            .join(Course, ExamResult.course_id == Course.id)
+            .where(ExamResult.user_id == user_id, in_dept)
         )
         overall = overall_row.fetchone()
 
@@ -79,7 +89,7 @@ class ProgressService:
             )
             .join(Question, UserAnswer.question_id == Question.id)
             .join(Course, Question.course_id == Course.id)
-            .where(UserAnswer.user_id == user_id)
+            .where(UserAnswer.user_id == user_id, in_dept)
             .group_by(Course.name)
             .order_by(answered_expr.desc())
         )
@@ -99,7 +109,8 @@ class ProgressService:
         topic_rows = await conn.execute(
             select(Topic.name, UserTopicError.error_count)
             .join(Topic, UserTopicError.topic_id == Topic.id)
-            .where(UserTopicError.user_id == user_id)
+            .join(Course, Topic.course_id == Course.id)
+            .where(UserTopicError.user_id == user_id, in_dept)
             .order_by(UserTopicError.error_count.desc())
             .limit(5)
         )
@@ -123,7 +134,7 @@ class ProgressService:
                 Course.name.label("course_name"),
             )
             .outerjoin(Course, ExamResult.course_id == Course.id)
-            .where(ExamResult.user_id == user_id)
+            .where(ExamResult.user_id == user_id, in_dept)
             .order_by(ExamResult.submitted_at.desc())
             .limit(200)
         )).fetchall()
@@ -191,6 +202,7 @@ class ProgressService:
                             break
 
         return ProgressResponse(
+            department_name=department_name,
             total_exams_taken=int(overall.exam_count or 0),
             total_practice_sessions=int(overall.practice_count or 0),
             overall_accuracy_percent=overall_accuracy,

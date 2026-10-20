@@ -70,6 +70,9 @@ class PlatformUserResponse(BaseModel):
     department_id: UUID | None = None
     department_name: str | None = None
     department_code: str | None = None
+    secondary_department_id: UUID | None = None
+    secondary_department_name: str | None = None
+    secondary_department_unlocked: bool = False
     invited_by_user_id: UUID | None = None
     invited_by_username: str | None = None
     invited_by_name: str | None = None
@@ -118,6 +121,9 @@ class UserDetailResponse(BaseModel):
     department_id: UUID | None = None
     department_name: str | None = None
     department_code: str | None = None
+    secondary_department_id: UUID | None = None
+    secondary_department_name: str | None = None
+    secondary_department_unlocked: bool = False
     invite_code: UUID | None = None
     invite_count: int = 0
     invited_by_user_id: UUID | None = None
@@ -172,6 +178,11 @@ class UserFlaggedResponse(BaseModel):
 
 class GrantFullAccessRequest(BaseModel):
     telegram_id: int
+
+
+class GrantDualRequest(BaseModel):
+    """Admin gives a PRO user Dual Degree access to this second department."""
+    department_id: UUID
 
 
 class GrantFullAccessResponse(BaseModel):

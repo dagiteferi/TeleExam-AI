@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
-async def _send_via_bot_relay(telegram_id: int, text: str) -> bool:
+async def _send_via_bot_relay(telegram_id: int, text: str, refresh_menu: bool) -> bool:
     """Asks the bot service to send the message (for hosts that block api.telegram.org)."""
     try:
         # Generous timeout: a sleeping bot host (e.g. Render free tier) can take ~50s to wake up
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 settings.bot_notify_url,
-                json={"telegram_id": telegram_id, "text": text},
+                json={"telegram_id": telegram_id, "text": text, "refresh_menu": refresh_menu},
                 headers={"X-Telegram-Secret": settings.telegram_webhook_secret},
             )
             if resp.status_code != 200:
@@ -39,13 +39,18 @@ async def _send_via_bot_relay(telegram_id: int, text: str) -> bool:
         return False
 
 
-async def send_telegram_message(telegram_id: int, text: str) -> bool:
+async def send_telegram_message(telegram_id: int, text: str, *, refresh_menu: bool = False) -> bool:
     """
     Sends a Telegram message to a user via the Bot HTTP API.
     Returns True on success, False on failure (never raises).
+
+    refresh_menu=True is for plan changes (PRO, dual degree, full access): the bot
+    relay reloads the user's profile and attaches the matching main menu, so buttons
+    like "Upgrade to PRO" / "Switch Department" change the moment the message arrives.
+    Sending directly (no BOT_NOTIFY_URL) delivers the text only.
     """
     if settings.bot_notify_url:
-        return await _send_via_bot_relay(telegram_id, text)
+        return await _send_via_bot_relay(telegram_id, text, refresh_menu)
 
     if not settings.telegram_bot_token:
         logger.warning("TELEGRAM_BOT_TOKEN not set — skipping user notification")

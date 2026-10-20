@@ -35,6 +35,7 @@ from app.schemas.admin import (
     UserFlaggedResponse,
     GrantFullAccessRequest,
     GrantFullAccessResponse,
+    GrantDualRequest,
     UserDetailResponse,
     UserExamSummary,
     InvitedUserSummary,
@@ -73,6 +74,7 @@ async def get_all_users(
 ) -> list[PlatformUserResponse]:
     """Requires: view_users permission or superadmin."""
     Inviter = aliased(User)
+    SecondaryDepartment = aliased(Department)
 
     exam_stats_sq = (
         select(
@@ -94,6 +96,9 @@ async def get_all_users(
             User.department_id,
             Department.name.label("department_name"),
             Department.code.label("department_code"),
+            User.secondary_department_id,
+            SecondaryDepartment.name.label("secondary_department_name"),
+            User.secondary_department_unlocked,
             User.invited_by_user_id,
             Inviter.telegram_username.label("invited_by_username"),
             Inviter.first_name.label("invited_by_name"),
@@ -110,6 +115,7 @@ async def get_all_users(
             exam_stats_sq.c.avg_score.label("avg_score"),
         )
         .outerjoin(Department, User.department_id == Department.id)
+        .outerjoin(SecondaryDepartment, User.secondary_department_id == SecondaryDepartment.id)
         .outerjoin(Inviter, User.invited_by_user_id == Inviter.id)
         .outerjoin(exam_stats_sq, User.id == exam_stats_sq.c.user_id)
     )
@@ -235,7 +241,8 @@ async def grant_full_access(
         body.telegram_id,
         "🔓 <b>Full Access Granted!</b>\n\n"
         "You have been granted <b>unlimited access</b> to all courses and exam years by an administrator.\n"
-        "You can now use all content without any invite restrictions."
+        "You can now use all content without any invite restrictions.",
+        refresh_menu=True,
     )
 
     return GrantFullAccessResponse(
@@ -278,7 +285,8 @@ async def revoke_full_access(
         body.telegram_id,
         "🔒 <b>Full Access Revoked</b>\n\n"
         "Your unlimited access has been revoked by an administrator.\n"
-        "You are now subject to the normal invite-based content locking system."
+        "You are now subject to the normal invite-based content locking system.",
+        refresh_menu=True,
     )
 
     return GrantFullAccessResponse(
@@ -299,6 +307,7 @@ async def get_user_detail(
 ) -> UserDetailResponse:
     """Returns full details, department, inviter, exam statistics, and referrals for a user."""
     Inviter = aliased(User)
+    SecondaryDepartment = aliased(Department)
 
     user_stmt = (
         select(
@@ -310,6 +319,9 @@ async def get_user_detail(
             User.department_id,
             Department.name.label("department_name"),
             Department.code.label("department_code"),
+            User.secondary_department_id,
+            SecondaryDepartment.name.label("secondary_department_name"),
+            User.secondary_department_unlocked,
             User.invite_code,
             User.invite_count,
             User.invited_by_user_id,
@@ -325,6 +337,7 @@ async def get_user_detail(
             User.updated_at,
         )
         .outerjoin(Department, User.department_id == Department.id)
+        .outerjoin(SecondaryDepartment, User.secondary_department_id == SecondaryDepartment.id)
         .outerjoin(Inviter, User.invited_by_user_id == Inviter.id)
         .where(User.id == user_id)
     )
@@ -481,7 +494,8 @@ async def toggle_user_pro(
             "• 🤖 <b>AI Tutor</b> — unlimited explanations & study plans\n"
             "• 📚 <b>All Courses & Exam Years</b> — full content unlocked\n"
             "• 🎯 <b>Unlimited Daily Questions</b>\n\n"
-            "Enjoy your PRO experience! 🎉"
+            "Enjoy your PRO experience! 🎉",
+            refresh_menu=True,
         )
     else:
         await send_telegram_message(
@@ -490,12 +504,114 @@ async def toggle_user_pro(
             "Your <b>PRO</b> subscription has been revoked by an administrator.\n"
             "Your account has been returned to the <b>Free</b> tier.\n\n"
             "You can still access free content and earn invites to unlock more.\n"
-            "Contact support if you believe this was a mistake."
+            "Contact support if you believe this was a mistake.",
+            refresh_menu=True,
         )
 
     updated_result = await conn.execute(select(User).where(User.id == user_id))
     updated_user = updated_result.mappings().one_or_none()
     return PlatformUserResponse(**updated_user)
+
+
+@router.post("/{user_id}/grant-dual", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("view_users"))])
+async def grant_dual_degree(
+    user_id: UUID,
+    body: GrantDualRequest,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> PlatformUserResponse:
+    """
+    Gives a PRO user Dual Degree access to a second department (same result as an
+    approved dual payment). The user is notified and their bot menu updates at once.
+    """
+    result = await conn.execute(select(User).where(User.id == user_id))
+    user = result.mappings().one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "user_not_found", "message": "User not found"}},
+        )
+    if not user["department_id"]:
+        raise HTTPException(status_code=400, detail="The user has not chosen a main department yet.")
+    if not user["is_pro"] and not user["is_full_access"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Dual Degree is an add-on to PRO. Make the user PRO first, then grant Dual Degree.",
+        )
+    if body.department_id == user["department_id"]:
+        raise HTTPException(status_code=400, detail="The second department must be different from the main department.")
+
+    dept_name = await conn.scalar(
+        select(Department.name).where(Department.id == body.department_id, Department.is_active == True)
+    )
+    if not dept_name:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    await conn.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(
+            secondary_department_id=body.department_id,
+            secondary_department_unlocked=True,
+            updated_at=datetime.datetime.utcnow(),
+        )
+    )
+    await conn.commit()
+
+    await send_telegram_message(
+        user["telegram_id"],
+        f"🎓 <b>Dual Degree Activated, {display_name(user)}!</b>\n\n"
+        f"An administrator has unlocked your second department: <b>{html.escape(dept_name.title())}</b>.\n"
+        "Exams, practice, progress and AI study plans are now available for it.\n\n"
+        "Tap <b>🔄 Switch Department</b> in the menu to move between your departments.",
+        refresh_menu=True,
+    )
+
+    updated_result = await conn.execute(select(User).where(User.id == user_id))
+    return PlatformUserResponse(**updated_result.mappings().one())
+
+
+@router.post("/{user_id}/revoke-dual", response_model=PlatformUserResponse, dependencies=[Depends(require_permission("view_users"))])
+async def revoke_dual_degree(
+    user_id: UUID,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> PlatformUserResponse:
+    """
+    Removes Dual Degree: the second department is cleared and the user goes back to
+    their main department. Their results and saved questions are kept (just hidden).
+    """
+    result = await conn.execute(select(User).where(User.id == user_id))
+    user = result.mappings().one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "user_not_found", "message": "User not found"}},
+        )
+    if not user["secondary_department_id"]:
+        raise HTTPException(status_code=400, detail="This user does not have a Dual Degree.")
+
+    await conn.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(
+            secondary_department_id=None,
+            secondary_department_unlocked=False,
+            active_department_id=None,
+            updated_at=datetime.datetime.utcnow(),
+        )
+    )
+    await conn.commit()
+
+    await send_telegram_message(
+        user["telegram_id"],
+        f"🎓 <b>Dual Degree Removed, {display_name(user)}</b>\n\n"
+        "An administrator has removed your second department. "
+        "You are back in your main department.\n\n"
+        "Contact support if you believe this was a mistake.",
+        refresh_menu=True,
+    )
+
+    updated_result = await conn.execute(select(User).where(User.id == user_id))
+    return PlatformUserResponse(**updated_result.mappings().one())
 
 
 @router.post("/{user_id}/reset-access", response_model=PlatformUserResponse, dependencies=[Depends(require_superadmin)])
@@ -531,7 +647,8 @@ async def reset_user_access(
         "• PRO status: <b>Removed</b>\n"
         "• Full access: <b>Removed</b>\n"
         "• Invite count: <b>Reset to 0</b>\n\n"
-        "You are now on the Free tier. Contact support if you have questions."
+        "You are now on the Free tier. Contact support if you have questions.",
+        refresh_menu=True,
     )
 
     updated_result = await conn.execute(select(User).where(User.id == user_id))

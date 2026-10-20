@@ -17,8 +17,12 @@ class UserService:
             User.invite_code,
             User.invite_count,
             User.is_pro,
+            User.is_full_access,
             User.plan_expiry,
             User.department_id,
+            User.secondary_department_id,
+            User.secondary_department_unlocked,
+            User.active_department_id,
         ).where(User.telegram_id == telegram_id)
         result = await conn.execute(stmt)
         return result.fetchone()
@@ -52,8 +56,12 @@ class UserService:
                 User.invite_code,
                 User.invite_count,
                 User.is_pro,
+                User.is_full_access,
                 User.plan_expiry,
                 User.department_id,
+                User.secondary_department_id,
+                User.secondary_department_unlocked,
+                User.active_department_id,
             )
 
             if not update_data:

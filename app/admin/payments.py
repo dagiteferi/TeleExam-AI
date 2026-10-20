@@ -11,7 +11,9 @@ from sqlalchemy import select, update
 
 from app.admin.deps import require_superadmin, get_admin_db
 from app.db.postgres import db_conn
+from app.core.config import settings
 from app.models.bank_account import BankAccount
+from app.models.department import Department
 from app.models.payment_request import PaymentRequest
 from app.models.user import User
 from app.schemas.payment import BankAccountCreate, BankAccountUpdate, BankAccountResponse, PaymentRequestResponse
@@ -113,7 +115,28 @@ async def get_payment_requests(
     
     result = await conn.execute(query)
     requests = result.mappings().all()
-    return [PaymentRequestResponse(**r) for r in requests]
+    return await _with_labels(conn, requests)
+
+
+def _amount_birr(kind: str | None) -> int:
+    return settings.DUAL_DEPT_PRICE_BIRR if kind == "dual_department" else settings.PRO_PRICE_BIRR
+
+
+async def _with_labels(conn: AsyncConnection, requests) -> list[PaymentRequestResponse]:
+    """Adds the expected amount and the dual target department's name to each request."""
+    dept_ids = {r["target_department_id"] for r in requests if r.get("target_department_id")}
+    names: dict = {}
+    if dept_ids:
+        rows = await conn.execute(select(Department.id, Department.name).where(Department.id.in_(dept_ids)))
+        names = {row.id: row.name for row in rows}
+    return [
+        PaymentRequestResponse(
+            **r,
+            target_department_name=names.get(r.get("target_department_id")),
+            amount_birr=_amount_birr(r.get("kind")),
+        )
+        for r in requests
+    ]
 
 
 @router.post("/requests/{request_id}/approve", response_model=PaymentRequestResponse)
@@ -132,37 +155,80 @@ async def approve_payment_request(
     if pr["status"] == "approved":
         raise HTTPException(status_code=400, detail="Already approved")
 
+    # 2. Check the payment can be applied before changing anything.
+    user_id = pr["user_id"]
+    kind = pr.get("kind") or "pro"
+    user_result = await conn.execute(select(User).where(User.id == user_id))
+    user = user_result.mappings().one()
+    if kind == "dual_department":
+        # The dual fee is only an add-on: it must never stand in for the PRO payment.
+        if not user["is_pro"] and not user["is_full_access"]:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"This is a Dual Degree payment ({settings.DUAL_DEPT_PRICE_BIRR} Birr) and cannot make the user PRO. "
+                    f"The user is not PRO yet: approve their {settings.PRO_PRICE_BIRR} Birr PRO payment first, or reject this one."
+                ),
+            )
+        target_department_id = pr.get("target_department_id") or user["secondary_department_id"]
+        if not target_department_id:
+            raise HTTPException(status_code=400, detail="This Dual Degree payment has no second department selected.")
+        if target_department_id == user["department_id"]:
+            raise HTTPException(status_code=400, detail="The second department is the same as the user's main department.")
+    elif user["is_pro"]:
+        raise HTTPException(
+            status_code=400,
+            detail="The user is already PRO, so this is probably a duplicate PRO payment. Reject it instead.",
+        )
+
     now = datetime.datetime.utcnow()
 
-    # 2. Update request status (no admin_id — superadmin has no DB row)
+    # 3. Update request status (no admin_id — superadmin has no DB row)
     await conn.execute(
         update(PaymentRequest)
         .where(PaymentRequest.id == request_id)
         .values(status="approved", rejection_reason=None, updated_at=now)
     )
 
-    # 3. Upgrade user to PRO
-    user_id = pr["user_id"]
-    await conn.execute(update(User).where(User.id == user_id).values(is_pro=True, updated_at=now))
+    # 4. Apply the paid upgrade
+    if kind == "dual_department":
+        await conn.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(
+                secondary_department_id=target_department_id,
+                secondary_department_unlocked=True,
+                updated_at=now,
+            )
+        )
+    else:
+        await conn.execute(update(User).where(User.id == user_id).values(is_pro=True, updated_at=now))
 
     await conn.commit()
 
-    # 4. Notify user
-    user_result = await conn.execute(select(User).where(User.id == user_id))
-    user = user_result.mappings().one()
+    # 5. Notify user
     name = display_name(user)
 
-    await send_telegram_message(
-        user["telegram_id"],
-        f"✅ <b>Payment Approved!</b>\n\n"
-        f"Congratulations {name}, your payment screenshot was verified.\n"
-        "Your account has been upgraded to <b>PRO</b>!\n\n"
-        "You now have unlimited access to the AI Tutor and all exams. Happy studying! 🎉"
-    )
+    if kind == "dual_department":
+        dept_name = await conn.scalar(select(Department.name).where(Department.id == target_department_id))
+        notify_text = (
+            f"🎓 <b>Dual Degree Payment Approved!</b>\n\n"
+            f"Congratulations {name}, your Dual Degree payment was verified.\n"
+            f"Your second department <b>{html.escape((dept_name or '').title())}</b> is now fully unlocked — "
+            "exams, practice, progress and AI study plans.\n\n"
+            "Tap <b>🔄 Switch Department</b> in the menu to move between your departments. Happy studying! 🎉"
+        )
+    else:
+        notify_text = (
+            f"✅ <b>Payment Approved!</b>\n\n"
+            f"Congratulations {name}, your payment screenshot was verified.\n"
+            "Your account has been upgraded to <b>PRO</b>!\n\n"
+            "You now have unlimited access to the AI Tutor and all exams. Happy studying! 🎉"
+        )
+    await send_telegram_message(user["telegram_id"], notify_text, refresh_menu=True)
 
     pr_updated_result = await conn.execute(select(PaymentRequest).where(PaymentRequest.id == request_id))
-    pr_updated = pr_updated_result.mappings().one()
-    return PaymentRequestResponse(**pr_updated)
+    return (await _with_labels(conn, [pr_updated_result.mappings().one()]))[0]
 
 
 @router.post("/requests/{request_id}/reject", response_model=PaymentRequestResponse)
@@ -197,14 +263,14 @@ async def reject_payment_request(
     name = display_name(user)
     reason_msg = f"Reason: <i>{html.escape(reason)}</i>\n\n" if reason else ""
 
+    title = "Dual Degree Payment Rejected" if pr.get("kind") == "dual_department" else "Payment Rejected"
     await send_telegram_message(
         user["telegram_id"],
-        f"❌ <b>Payment Rejected</b>\n\n"
+        f"❌ <b>{title}</b>\n\n"
         f"Sorry {name}, we could not verify your payment screenshot.\n"
         f"{reason_msg}"
         "Your request has been rejected. If you believe this is a mistake, please try submitting a clearer screenshot or contact support."
     )
 
     pr_updated_result = await conn.execute(select(PaymentRequest).where(PaymentRequest.id == request_id))
-    pr_updated = pr_updated_result.mappings().one()
-    return PaymentRequestResponse(**pr_updated)
+    return (await _with_labels(conn, [pr_updated_result.mappings().one()]))[0]

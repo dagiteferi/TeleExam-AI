@@ -26,6 +26,7 @@ from app.models.question import Question
 from app.models.past_exam import PastExam, PastExamQuestion
 from app.models.exam_template import ExamTemplate, ExamTemplateTopic
 from app.models.user import User
+from app.services.access_service import AccessService
 from app.schemas.sessions import (
     SessionMode,
     StartSessionRequest,
@@ -102,14 +103,27 @@ class SessionService:
                 pe_data = pe_meta.fetchone()
                 if not pe_data:
                     raise HTTPException(status_code=404, detail="Past exam not found")
-                
+
+                access = await AccessService.get_by_user_id(conn, user_id)
+                if access and not access.can_use_department(pe_data.department_id):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail={
+                            "error": {
+                                "code": "department_locked",
+                                "message": (
+                                    f"This exam belongs to another department. "
+                                    f"PRO students can unlock a second department for {settings.DUAL_DEPT_PRICE_BIRR} Birr."
+                                ),
+                            }
+                        },
+                    )
+
                 # --- Referral Enforcement Guard ---
-                user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.id == user_id))
-                user = user_row.fetchone()
-                invite_count = user.invite_count if user else 0
-                is_pro = user.is_pro if user else False
-                
-                if not is_pro and invite_count < 4:
+                invite_count = access.invite_count if access else 0
+                fully_unlocked = bool(access and access.fully_unlocks(pe_data.department_id))
+
+                if not fully_unlocked and invite_count < 4:
                     unlocked_count = invite_count + 1
                     # Get all years for this dept
                     avail_years_res = await conn.execute(
@@ -197,6 +211,30 @@ class SessionService:
                 rng.shuffle(question_ids)
 
         elif request.mode == "practice":
+            access = await AccessService.get_by_user_id(conn, user_id)
+            target_dept = None
+            if request.course_id:
+                target_dept = await conn.scalar(select(Course.department_id).where(Course.id == request.course_id))
+            elif request.topic_id:
+                target_dept = await conn.scalar(
+                    select(Course.department_id)
+                    .join(Topic, Topic.course_id == Course.id)
+                    .where(Topic.id == request.topic_id)
+                )
+            if access and target_dept and not access.can_use_department(target_dept):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "error": {
+                            "code": "department_locked",
+                            "message": (
+                                f"This course belongs to another department. "
+                                f"PRO students can unlock a second department for {settings.DUAL_DEPT_PRICE_BIRR} Birr."
+                            ),
+                        }
+                    },
+                )
+
             if request.topic_id:
                 questions = await conn.scalars(
                     select(Question.id).where(Question.topic_id == request.topic_id, Question.is_active == True)

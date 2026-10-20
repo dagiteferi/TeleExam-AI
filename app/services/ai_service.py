@@ -3,12 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from uuid import UUID
 import json
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, true
 from app.models.user import User
 from app.models.department import Department
 from app.models.exam_result import ExamResult
 from app.models.user_topic_error import UserTopicError
 from app.models.topic import Topic
+from app.models.course import Course
+from app.services.access_service import AccessService
 from app.ai.graph import AiGraph
 from app.ai.tools import fetch_question_details, fetch_user_weak_topics
 from app.schemas.ai import (
@@ -139,10 +141,10 @@ class AiService:
 
         if not question_id or question_id == GENERAL_CHAT_QUESTION_ID:
             # General study chat (AI Tutor from the main menu): no question context.
-            department = await conn.scalar(
-                select(Department.name)
-                .join(User, User.department_id == Department.id)
-                .where(User.telegram_id == telegram_id)
+            access = await AccessService.get_by_telegram_id(conn, telegram_id)
+            dept_id = access.effective_department_id if access else None
+            department = (
+                await conn.scalar(select(Department.name).where(Department.id == dept_id)) if dept_id else None
             )
             instructions = (
                 "You are a friendly study tutor for Ethiopian university students"
@@ -206,8 +208,17 @@ class AiService:
                 message=f"💎 Upgrade to PRO: Personalized AI Study Plans are an exclusive PRO feature!\n\n{PRO_UPGRADE_LINE}"
             )
 
+        # Dual-degree students get a plan for the department they are studying now.
+        access = await AccessService.get_by_user_id(conn, user.id)
+        dept_id = access.effective_department_id if access else None
+        in_dept = (Course.department_id == dept_id) if dept_id else true()
+
         # 2. Requirement: Must have finished at least one full exam
-        exam_stmt = select(func.count(ExamResult.id)).where(ExamResult.user_id == user.id, ExamResult.mode == "exam")
+        exam_stmt = (
+            select(func.count(ExamResult.id))
+            .join(Course, ExamResult.course_id == Course.id)
+            .where(ExamResult.user_id == user.id, ExamResult.mode == "exam", in_dept)
+        )
         exam_count = (await conn.execute(exam_stmt)).scalar() or 0
         if exam_count == 0:
              return StudyPlanResponse(success=False, message="📊 Data Needed: Please complete at least one full Mock Exam so the AI can analyze your weak points!")
@@ -219,7 +230,9 @@ class AiService:
                 func.avg(ExamResult.score_percent).label("avg_score"),
                 func.sum(ExamResult.correct_count).label("total_correct"),
                 func.sum(ExamResult.wrong_count).label("total_wrong")
-            ).where(ExamResult.user_id == user.id, ExamResult.mode == "exam")
+            )
+            .join(Course, ExamResult.course_id == Course.id)
+            .where(ExamResult.user_id == user.id, ExamResult.mode == "exam", in_dept)
         )
         overall = overall_row.fetchone()
 
@@ -229,7 +242,8 @@ class AiService:
                 Topic.name,
                 UserTopicError.error_count
             ).join(Topic, UserTopicError.topic_id == Topic.id)
-            .where(UserTopicError.user_id == user.id)
+            .join(Course, Topic.course_id == Course.id)
+            .where(UserTopicError.user_id == user.id, in_dept)
             .order_by(UserTopicError.error_count.desc())
             .limit(6)
         )

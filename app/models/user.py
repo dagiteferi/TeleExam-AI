@@ -34,10 +34,15 @@ class User(Base):
 
     
     department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=True)
+    secondary_department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=True)
+    secondary_department_unlocked = Column(Boolean, nullable=False, default=False)
+    # Department the user is currently studying (dual degree); NULL = main department.
+    active_department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.datetime.now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.datetime.now, onupdate=datetime.datetime.now) # Added onupdate
 
     # Relationships
     invited_by = relationship("User", remote_side=[id], backref="invited_users") # Added relationship
-    department = relationship("Department")
+    department = relationship("Department", foreign_keys=[department_id])
+    secondary_department = relationship("Department", foreign_keys=[secondary_department_id])

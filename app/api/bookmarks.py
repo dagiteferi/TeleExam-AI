@@ -6,8 +6,10 @@ from app.api.deps import get_db_conn, get_current_telegram_id
 from app.db.postgres import db_conn
 from app.schemas.bookmark import BookmarkCreateResponse, BookmarkListResponse, BookmarkResponse
 from app.models.bookmark import Bookmark
-from sqlalchemy import select, delete, insert
+from sqlalchemy import select, delete, insert, true
+from app.models.course import Course
 from app.models.user import User
+from app.services.access_service import AccessService
 
 router = APIRouter(
     prefix="/bookmarks",
@@ -69,16 +71,20 @@ async def get_my_bookmarks(
     conn: AsyncConnection = Depends(get_db_conn)
 ):
     """
-    Gets all bookmarks for the user.
+    Gets the user's bookmarks for the department they are studying now
+    (dual-degree students keep a separate list per department).
     """
     from app.models.user import User
     user_result = await conn.execute(select(User.id).where(User.telegram_id == telegram_id))
     user_id = user_result.scalar_one_or_none()
-    
+
     if not user_id:
         raise HTTPException(status_code=404, detail="User not found")
-        
+
     from app.models.question import Question
+    access = await AccessService.get_by_user_id(conn, user_id)
+    dept_id = access.effective_department_id if access else None
+    in_dept = (Course.department_id == dept_id) if dept_id else true()
     # Get bookmarks with question data using explicit columns for AsyncConnection
     stmt = (
         select(
@@ -94,7 +100,8 @@ async def get_my_bookmarks(
             Question.correct_choice,
         )
         .join(Question, Bookmark.question_id == Question.id)
-        .where(Bookmark.user_id == user_id)
+        .join(Course, Question.course_id == Course.id)
+        .where(Bookmark.user_id == user_id, in_dept)
         .order_by(Bookmark.created_at.desc())
     )
     result = await conn.execute(stmt)
