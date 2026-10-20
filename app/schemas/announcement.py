@@ -6,23 +6,28 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-Audience = Literal["all", "pro", "free", "dual", "department", "user"]
+Audience = Literal["all", "pro", "free", "dual", "department", "users"]
 
 # Telegram allows 4096 characters; leave room for the "📢 Announcement" header.
 MAX_ANNOUNCEMENT_LENGTH = 3500
+# For bigger groups, use an audience (all, PRO, department...) instead of picking users.
+MAX_SELECTED_USERS = 500
 
 
 class AnnouncementAudience(BaseModel):
     audience: Audience
     department_id: UUID | None = None  # audience == "department"
-    telegram_id: int | None = None  # audience == "user"
+    user_ids: list[UUID] | None = None  # audience == "users": users picked in the admin panel
 
     @model_validator(mode="after")
     def _check_target(self):
         if self.audience == "department" and not self.department_id:
             raise ValueError("Choose a department.")
-        if self.audience == "user" and not self.telegram_id:
-            raise ValueError("Enter the user's Telegram ID.")
+        if self.audience == "users":
+            if not self.user_ids:
+                raise ValueError("Select at least one user.")
+            if len(set(self.user_ids)) > MAX_SELECTED_USERS:
+                raise ValueError(f"Select at most {MAX_SELECTED_USERS} users, or send to a group instead.")
         return self
 
 
@@ -37,11 +42,12 @@ class AnnouncementPreview(BaseModel):
 class AnnouncementResponse(BaseModel):
     id: UUID
     text: str
-    audience: Audience
+    # Plain str, not Audience: one old or unknown row must never break the whole list.
+    audience: str
     department_id: UUID | None = None
     department_name: str | None = None
     target_user_id: UUID | None = None
-    target_user_label: str | None = None
+    target_user_label: str | None = None  # name when one user was selected
     created_by: str | None = None
     created_at: datetime
     recipient_count: int

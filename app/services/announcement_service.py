@@ -33,8 +33,8 @@ def audience_filter(target: AnnouncementAudience) -> ColumnElement[bool]:
             User.department_id == target.department_id,
             and_(User.secondary_department_id == target.department_id, HAS_DUAL_ACCESS),
         )
-    elif target.audience == "user":
-        match = User.telegram_id == target.telegram_id
+    elif target.audience == "users":
+        match = User.id.in_(set(target.user_ids or []))
     else:
         match = false()
     return and_(not_banned, match)

@@ -26,16 +26,17 @@ router = APIRouter(prefix="/announcements", dependencies=[Depends(require_supera
 
 
 async def _check_target(conn: AsyncConnection, target: AnnouncementAudience) -> UUID | None:
-    """Validates the department / user target; returns the target user's id for a single-user audience."""
+    """Validates the department / selected users; returns the user's id when exactly one is selected."""
     if target.audience == "department":
         exists = await conn.scalar(select(Department.id).where(Department.id == target.department_id))
         if not exists:
             raise HTTPException(status_code=404, detail="Department not found")
-    if target.audience == "user":
-        user_id = await conn.scalar(select(User.id).where(User.telegram_id == target.telegram_id))
-        if not user_id:
-            raise HTTPException(status_code=404, detail="No user with this Telegram ID")
-        return user_id
+    if target.audience == "users":
+        selected = set(target.user_ids or [])
+        found = await conn.scalar(select(func.count(User.id)).where(User.id.in_(selected)))
+        if found != len(selected):
+            raise HTTPException(status_code=404, detail="Some selected users no longer exist. Refresh and try again.")
+        return next(iter(selected)) if len(selected) == 1 else None
     return None
 
 
