@@ -388,6 +388,11 @@ class SessionService:
 
         logger.info("Session started", session_id=session_id, user_id=str(user_id), mode=request.mode, total_questions=total_questions)
 
+        # Referral logic: credit the inviter once, on the invitee's first quiz/exam/practice session
+        from app.services.referral_service import ReferralService
+        await ReferralService().credit_inviter_on_first_session(conn, user_id)
+        await conn.commit()
+
         return StartSessionResponse(
             session_id=uuid.UUID(session_id),
             mode=request.mode,
@@ -635,7 +640,6 @@ class SessionService:
         q_map = {str(r.id): {"correct": r.correct_choice, "topic": r.topic_id} for r in questions_db}
         
         from app.services.analytics_service import AnalyticsService
-        from app.services.referral_service import ReferralService
         analytics = AnalyticsService()
         
         correct_count = 0
@@ -659,10 +663,6 @@ class SessionService:
         else:
             scored_count = len(question_ids)
         score_percent = round((correct_count / scored_count) * 100, 2) if scored_count > 0 else 0.0
-        
-        # Referral logic: credit inviter if first quiz completion
-        if session_data["mode"] == "quiz":
-            await ReferralService().credit_inviter_on_first_quiz_completion(conn, uuid.UUID(session_data["user_id"]))
         
         # Persist Result to Postgres
         from sqlalchemy import insert

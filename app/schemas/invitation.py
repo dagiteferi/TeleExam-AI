@@ -54,24 +54,6 @@ class InvitationRuleConfig(BaseModel):
         ge=0,
         description="Extra daily free AI explanations granted per invite.",
     )
-    pro_reward_invite_threshold: int = Field(
-        default=0,
-        ge=0,
-        description="Number of invites required to automatically earn PRO access (0 to disable).",
-    )
-    pro_reward_days: int = Field(
-        default=0,
-        ge=0,
-        description="Duration in days of PRO earned (0 = permanent, e.g. 7 for 7-day Pro trial).",
-    )
-    credit_on_signup: bool = Field(
-        default=True,
-        description="Whether an invite count is credited immediately upon user registration.",
-    )
-    credit_on_first_quiz: bool = Field(
-        default=True,
-        description="Whether an invite count is credited when the invited user completes their first quiz.",
-    )
 
     def is_all_unlocked(self, invite_count: int) -> bool:
         """True if user has reached the universal threshold or years threshold."""
@@ -180,9 +162,6 @@ class InvitationRuleConfig(BaseModel):
         perks = []
         if self.ai_bonus_per_invite > 0:
             perks.append(f"+{self.ai_bonus_per_invite} daily AI explanations/invite")
-        if self.pro_reward_invite_threshold > 0:
-            duration = f"{self.pro_reward_days}-day" if self.pro_reward_days > 0 else "permanent"
-            perks.append(f"{duration} PRO awarded at {self.pro_reward_invite_threshold} invites")
 
         perks_summary = f"; Rewards: {', '.join(perks)}" if perks else ""
         return f"{year_rule}; {free_rule}; {all_rule}{perks_summary}."
@@ -197,10 +176,6 @@ class InvitationRuleUpdate(BaseModel):
     invites_to_unlock_all_courses: int | None = Field(default=None, ge=0)
     invites_to_unlock_all: int | None = Field(default=None, ge=0)
     ai_bonus_per_invite: int | None = Field(default=None, ge=0)
-    pro_reward_invite_threshold: int | None = Field(default=None, ge=0)
-    pro_reward_days: int | None = Field(default=None, ge=0)
-    credit_on_signup: bool | None = None
-    credit_on_first_quiz: bool | None = None
 
 
 class InvitationRuleResponse(InvitationRuleConfig):

@@ -1,55 +1,19 @@
 from __future__ import annotations
-import datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.models.user import User
-from app.services.invitation_service import InvitationService
-from app.core.notify import send_telegram_message
+
+# Set on the invitee once their inviter has been credited.
+# "first_quiz_credited" is the older key and is still honoured so nobody is credited twice.
+CREDITED_KEY = "first_session_credited"
+LEGACY_CREDITED_KEY = "first_quiz_credited"
 
 
 class ReferralService:
-    async def _check_and_grant_pro_reward(
-        self, conn: AsyncConnection, inviter_id: UUID
-    ) -> None:
-        """Checks if the inviter reached the threshold to earn PRO access as a reward."""
-        config = await InvitationService.get_config(conn)
-        if config.pro_reward_invite_threshold <= 0:
-            return
-
-        res = await conn.execute(
-            select(User.invite_count, User.is_pro, User.telegram_id, User.first_name)
-            .where(User.id == inviter_id)
-        )
-        row = res.fetchone()
-        if not row or row.is_pro or row.invite_count < config.pro_reward_invite_threshold:
-            return
-
-        plan_expiry = None
-        if config.pro_reward_days > 0:
-            plan_expiry = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=config.pro_reward_days)
-
-        await conn.execute(
-            update(User)
-            .where(User.id == inviter_id)
-            .values(is_pro=True, plan_expiry=plan_expiry)
-        )
-
-        if row.telegram_id:
-            duration_text = f"for {config.pro_reward_days} days" if config.pro_reward_days > 0 else "permanently"
-            await send_telegram_message(
-                row.telegram_id,
-                f"🎁 <b>Congratulations, {row.first_name or 'there'}! You unlocked PRO access {duration_text}!</b>\n\n"
-                f"You have invited {row.invite_count} friends to TeleExam AI.\n"
-                "As an invitation reward, your account has been upgraded to <b>PRO</b>!\n\n"
-                "• Unlimited AI explanations\n"
-                "• All course exams unlocked\n"
-                "• Full access across the platform! 🎉",
-                refresh_menu=True,
-            )
-
     async def process_referral_on_user_upsert(
         self, conn: AsyncConnection, user_id: UUID, ref_code: UUID | None
     ) -> None:
@@ -61,61 +25,45 @@ class ReferralService:
             .where(User.invite_code == ref_code)
         )
         inviter = result.fetchone()
-        
+
         if inviter and inviter.id != user_id:
-            # 1. Update the invitee's record
+            # Only link the invitee here; the inviter is credited once the invitee
+            # starts their first session (see credit_inviter_on_first_session).
             await conn.execute(
                 update(User)
                 .where(User.id == user_id)
                 .values(invited_by_user_id=inviter.id)
             )
-            
-            # 2. Check if admin configured signup credit
-            config = await InvitationService.get_config(conn)
-            if config.credit_on_signup:
-                await conn.execute(
-                    update(User)
-                    .where(User.id == inviter.id)
-                    .values(invite_count=User.invite_count + 1)
-                )
-                await self._check_and_grant_pro_reward(conn, inviter.id)
 
-    async def credit_inviter_on_first_quiz_completion(
+    async def credit_inviter_on_first_session(
         self, conn: AsyncConnection, user_id: UUID
     ) -> None:
-        config = await InvitationService.get_config(conn)
-        if not config.credit_on_first_quiz:
-            return
-
-        # Get the user's inviter and current reward state
+        """Credits the inviter with one invite the first time the invitee starts a quiz, exam or practice."""
+        state = func.coalesce(User.referral_reward_state, func.jsonb_build_object(), type_=JSONB)
+        # Mark the invitee as credited and get their inviter in one statement,
+        # so two sessions started at the same time can't credit twice.
         result = await conn.execute(
-            select(User.invited_by_user_id, User.referral_reward_state).where(User.id == user_id)
+            update(User)
+            .where(
+                User.id == user_id,
+                User.invited_by_user_id.is_not(None),
+                ~state.has_key(CREDITED_KEY),
+                ~state.has_key(LEGACY_CREDITED_KEY),
+            )
+            .values(
+                referral_reward_state=state.op("||")(func.jsonb_build_object(CREDITED_KEY, True))
+            )
+            .returning(User.invited_by_user_id)
         )
         row = result.fetchone()
-        if not row or not row.invited_by_user_id:
+        if not row:
             return
-        
-        # Check if already rewarded
-        state = dict(row.referral_reward_state) if row.referral_reward_state else {}
-        if state.get("first_quiz_credited"):
-            return
-            
-        # Credit the inviter
+
         await conn.execute(
             update(User)
             .where(User.id == row.invited_by_user_id)
             .values(invite_count=User.invite_count + 1)
         )
-        
-        # Mark as credited for the invitee
-        state["first_quiz_credited"] = True
-        await conn.execute(
-            update(User)
-            .where(User.id == user_id)
-            .values(referral_reward_state=state)
-        )
-
-        await self._check_and_grant_pro_reward(conn, row.invited_by_user_id)
 
     async def get_user_referral_stats(
         self, conn: AsyncConnection, user_id: UUID
