@@ -13,6 +13,7 @@ from app.models.course import Course
 from app.models.topic import Topic
 from app.models.department import Department
 from app.services.access_service import AccessService
+from app.services.invitation_service import InvitationService
 
 
 class QuestionService:
@@ -107,27 +108,23 @@ class QuestionService:
         if department_id and access and not access.can_use_department(department_id):
             return []
 
+        invite_config = await InvitationService.get_config(conn)
         invite_count = access.invite_count if access else 0
         fully_unlocked = bool(access and access.fully_unlocks(department_id))
 
-        # Calculate limits
         total_courses = len(courses)
-        base_unlocked = max(1, total_courses // 4) # 25% free (at least 1)
+        unlocked_count = invite_config.calculate_unlocked_courses_count(
+            invite_count=invite_count,
+            total_courses=total_courses,
+            fully_unlocked=fully_unlocked,
+        )
 
-        # Admin-granted full access, PRO (primary), dual fee (secondary), or 4+ invites → unlock everything
-        if fully_unlocked or invite_count >= 4:
-            unlocked_count = total_courses
-        else:
-            # 4 invites unlocks the remaining 75%.
-            # Each invite unlocks a proportionate amount of the remaining locked courses
-            remaining_to_unlock = total_courses - base_unlocked
-            extra_unlocked_per_invite = remaining_to_unlock / 4
-            unlocked_count = base_unlocked + int(invite_count * extra_unlocked_per_invite)
+        unlock_threshold = min(invite_config.invites_to_unlock_all, invite_config.invites_to_unlock_all_courses)
 
         for i, c in enumerate(courses):
             c["is_locked"] = i >= unlocked_count
             if c["is_locked"]:
-                c["required_invites"] = 4 # Need 4 invites to unlock all, simplified
+                c["required_invites"] = unlock_threshold
             else:
                 c["required_invites"] = 0
 
@@ -145,14 +142,9 @@ class QuestionService:
         if access and not access.can_use_department(department_id):
             return []
 
+        invite_config = await InvitationService.get_config(conn)
         invite_count = access.invite_count if access else 0
         fully_unlocked = bool(access and access.fully_unlocks(department_id))
-
-        # Admin-granted full access, PRO (primary), dual fee (secondary), or 4+ invites → unlock all years
-        if fully_unlocked or invite_count >= 4:
-            unlocked_count = 999
-        else:
-            unlocked_count = invite_count + 1
 
         from sqlalchemy import func, cast, Text
         query = (
@@ -167,25 +159,26 @@ class QuestionService:
         )
         result = await conn.execute(query)
         all_exams = [{"id": uuid.UUID(row.id), "year": row.year, "semester": row.semester} for row in result]
-        
-        import logging
-        logger = logging.getLogger(__name__)
 
-        # We lock the LATEST exams behind referrals. 
-        # The oldest exams are available for free (0 invites).
+        # The oldest exams are available for free based on invite_config.free_years.
         unique_years = sorted(list(set(e["year"] for e in all_exams)), reverse=False) # Ascending: 2015, 2016, 2017
-        allowed_years = unique_years[:unlocked_count]
-        
+        allowed_years = invite_config.calculate_allowed_years(
+            all_years_sorted_asc=unique_years,
+            invite_count=invite_count,
+            fully_unlocked=fully_unlocked,
+        )
+
         # Add lock status to each exam
         for e in all_exams:
             e["is_locked"] = e["year"] not in allowed_years
             if e["is_locked"]:
-                # Calculate how many invites they need to unlock this specific year
-                year_index = unique_years.index(e["year"])
-                e["required_invites"] = year_index
+                e["required_invites"] = invite_config.calculate_required_invites_for_year(
+                    year=e["year"],
+                    all_years_sorted_asc=unique_years,
+                )
             else:
                 e["required_invites"] = 0
-        
+
         return all_exams
 
 

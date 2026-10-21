@@ -27,6 +27,7 @@ from app.models.past_exam import PastExam, PastExamQuestion
 from app.models.exam_template import ExamTemplate, ExamTemplateTopic
 from app.models.user import User
 from app.services.access_service import AccessService
+from app.services.invitation_service import InvitationService
 from app.schemas.sessions import (
     SessionMode,
     StartSessionRequest,
@@ -123,19 +124,30 @@ class SessionService:
                 invite_count = access.invite_count if access else 0
                 fully_unlocked = bool(access and access.fully_unlocks(pe_data.department_id))
 
-                if not fully_unlocked and invite_count < 4:
-                    unlocked_count = invite_count + 1
-                    # Get all years for this dept
-                    avail_years_res = await conn.execute(
-                        select(PastExam.year).distinct().where(PastExam.department_id == pe_data.department_id).order_by(PastExam.year.asc())
-                    )
-                    avail_years = [r[0] for r in avail_years_res.fetchall()]
-                    allowed_years = avail_years[:unlocked_count]
-                    if pe_data.year not in allowed_years:
-                        raise HTTPException(
-                            status_code=status.HTTP_403_FORBIDDEN,
-                            detail={"error": {"code": "year_locked", "message": f"Support our mission! Invite {4 - invite_count} more friends to unlock the {pe_data.year} exams, or upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock everything."}}
+                if not fully_unlocked:
+                    invite_config = await InvitationService.get_config(conn)
+                    if not invite_config.is_all_unlocked(invite_count):
+                        # Get all years for this dept
+                        avail_years_res = await conn.execute(
+                            select(PastExam.year).distinct().where(PastExam.department_id == pe_data.department_id).order_by(PastExam.year.asc())
                         )
+                        avail_years = [r[0] for r in avail_years_res.fetchall()]
+                        allowed_years = invite_config.calculate_allowed_years(
+                            all_years_sorted_asc=avail_years,
+                            invite_count=invite_count,
+                            fully_unlocked=fully_unlocked,
+                        )
+                        if pe_data.year not in allowed_years:
+                            req_invites = invite_config.calculate_required_invites_for_year(
+                                year=pe_data.year,
+                                all_years_sorted_asc=avail_years,
+                            )
+                            needed = max(1, req_invites - invite_count)
+                            invite_phrase = f"{needed} more friend{'s' if needed > 1 else ''}"
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN,
+                                detail={"error": {"code": "year_locked", "message": f"Support our mission! Invite {invite_phrase} to unlock the {pe_data.year} exams, or upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock everything."}}
+                            )
                 # ----------------------------------
 
                 

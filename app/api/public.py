@@ -1,3 +1,4 @@
+import json
 import uuid
 from typing import Annotated
 
@@ -68,6 +69,16 @@ async def get_public_settings(
             v_strip = val.strip()
             if not (v_strip.startswith("http://") or v_strip.startswith("https://") or v_strip.startswith("tg://")):
                 val = f"https://t.me/{v_strip[1:]}" if v_strip.startswith("@") else f"https://t.me/{v_strip}"
+        elif row.key == "invitation_rules" and val:
+            try:
+                val = json.loads(val)
+            except Exception:
+                pass
         settings_map[row.key] = val
-    return settings_map
 
+    if "invitation_rules" not in settings_map:
+        from app.services.invitation_service import InvitationService
+        config = await InvitationService.get_config(conn)
+        settings_map["invitation_rules"] = config.model_dump()
+
+    return settings_map

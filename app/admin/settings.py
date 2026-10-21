@@ -9,8 +9,17 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.admin.deps import require_superadmin, get_admin_db
+from app.admin.deps import require_superadmin, require_permission, get_admin_db
 from app.models.app_setting import AppSetting
+from app.schemas.invitation import (
+    InvitationRuleConfig,
+    InvitationRuleResponse,
+    InvitationRuleUpdate,
+)
+from app.services.invitation_service import (
+    InvitationService,
+    INVITATION_SETTINGS_KEY,
+)
 
 router = APIRouter(prefix="/settings")
 
@@ -35,6 +44,55 @@ class AppSettingResponse(BaseModel):
     is_public: bool
 
 
+# ─── Configurable Invitation Rules ───────────────────────────────────────────
+
+@router.get(
+    "/invitation",
+    response_model=InvitationRuleResponse,
+    dependencies=[Depends(require_permission("manage_content"))],
+)
+async def get_invitation_rules(
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> InvitationRuleResponse:
+    """Returns the current configurable invitation and referral unlock rules."""
+    return await InvitationService.get_response(conn)
+
+
+@router.put(
+    "/invitation",
+    response_model=InvitationRuleResponse,
+    dependencies=[Depends(require_permission("manage_content"))],
+)
+async def update_invitation_rules(
+    body: InvitationRuleConfig,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> InvitationRuleResponse:
+    """
+    Creates or fully updates the invitation unlock rules configuration.
+    Configures how many invites open years, free baseline years, courses unlocked, and universal threshold.
+    """
+    response = await InvitationService.update_config(conn, body)
+    await conn.commit()
+    return response
+
+
+@router.patch(
+    "/invitation",
+    response_model=InvitationRuleResponse,
+    dependencies=[Depends(require_permission("manage_content"))],
+)
+async def patch_invitation_rules(
+    body: InvitationRuleUpdate,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> InvitationRuleResponse:
+    """Partially updates specific invitation unlock rule fields."""
+    response = await InvitationService.update_config(conn, body)
+    await conn.commit()
+    return response
+
+
+# ─── Generic App Settings ───────────────────────────────────────────────────
+
 @router.get("", response_model=list[AppSettingResponse], dependencies=[Depends(require_superadmin)])
 async def list_settings(
     conn: AsyncConnection = Depends(get_admin_db),
@@ -51,7 +109,7 @@ async def upsert_setting(
     conn: AsyncConnection = Depends(get_admin_db),
 ) -> AppSettingResponse:
     """Creates or fully replaces an app setting by key."""
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
     stmt = (
         pg_insert(AppSetting)
         .values(
@@ -76,6 +134,8 @@ async def upsert_setting(
     result = await conn.execute(stmt)
     await conn.commit()
     row = result.mappings().one()
+    if key == INVITATION_SETTINGS_KEY:
+        InvitationService.invalidate_cache()
     return AppSettingResponse(**dict(row))
 
 
@@ -93,12 +153,14 @@ async def patch_setting(
         raise HTTPException(status_code=404, detail=f"Setting '{key}' not found")
 
     update_data = body.model_dump(exclude_unset=True)
-    update_data["updated_at"] = datetime.datetime.utcnow()
+    update_data["updated_at"] = datetime.datetime.now(datetime.timezone.utc)
     await conn.execute(update(AppSetting).where(AppSetting.key == key).values(**update_data))
     await conn.commit()
 
     result = await conn.execute(select(AppSetting).where(AppSetting.key == key))
     updated = result.mappings().one()
+    if key == INVITATION_SETTINGS_KEY:
+        InvitationService.invalidate_cache()
     return AppSettingResponse(**dict(updated))
 
 
@@ -112,4 +174,6 @@ async def delete_setting(
     await conn.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=f"Setting '{key}' not found")
+    if key == INVITATION_SETTINGS_KEY:
+        InvitationService.invalidate_cache()
     return {"message": f"Setting '{key}' deleted"}

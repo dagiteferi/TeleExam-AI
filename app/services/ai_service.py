@@ -11,6 +11,7 @@ from app.models.user_topic_error import UserTopicError
 from app.models.topic import Topic
 from app.models.course import Course
 from app.services.access_service import AccessService
+from app.services.invitation_service import InvitationService
 from app.ai.graph import AiGraph
 from app.ai.tools import fetch_question_details, fetch_user_weak_topics
 from app.schemas.ai import (
@@ -37,12 +38,12 @@ PRO_UPGRADE_LINE = (
 GENERAL_CHAT_QUESTION_ID = "00000000-0000-0000-0000-000000000000"
 
 
-async def _consume_free_ai_use(redis: Redis, usage_key: str) -> bool:
+async def _consume_free_ai_use(redis: Redis, usage_key: str, daily_limit: int = FREE_AI_DAILY_LIMIT) -> bool:
     """Atomically uses one free AI request; False once the daily limit is reached."""
     used = await redis.incr(usage_key)
     if used == 1:
         await redis.expire(usage_key, 86400)  # Reset after 24 hours
-    if used > FREE_AI_DAILY_LIMIT:
+    if used > daily_limit:
         await redis.decr(usage_key)  # Blocked attempts don't count
         return False
     return True
@@ -76,9 +77,11 @@ class AiService:
 
         usage_key = None
         if not user.is_pro:
+            invite_config = await InvitationService.get_config(conn)
+            daily_limit = invite_config.calculate_ai_daily_limit(user.invite_count or 0, base_limit=FREE_AI_DAILY_LIMIT)
             usage_key = get_ai_usage_key(telegram_id)
-            if not await _consume_free_ai_use(redis, usage_key):
-                return ExplainResponse(success=False, explanation=f"⚠️ You've used your {FREE_AI_DAILY_LIMIT} free AI explanations for today!\n\n{PRO_UPGRADE_LINE}")
+            if not await _consume_free_ai_use(redis, usage_key, daily_limit=daily_limit):
+                return ExplainResponse(success=False, explanation=f"⚠️ You've used your {daily_limit} free AI explanations for today!\n\n{PRO_UPGRADE_LINE}")
         # ------------------------------
 
         # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
@@ -134,9 +137,11 @@ class AiService:
         # explanations, so the explanation doesn't use up a follow-up.
         usage_key = None
         if not user.is_pro:
+            invite_config = await InvitationService.get_config(conn)
+            daily_limit = invite_config.calculate_ai_daily_limit(user.invite_count or 0, base_limit=FREE_AI_DAILY_LIMIT)
             usage_key = f"{get_ai_usage_key(telegram_id)}:chat"
-            if not await _consume_free_ai_use(redis, usage_key):
-                return ChatResponse(success=False, ai_response=f"⚠️ You've used your {FREE_AI_DAILY_LIMIT} free AI follow-up questions for today!\n\n{PRO_UPGRADE_LINE}")
+            if not await _consume_free_ai_use(redis, usage_key, daily_limit=daily_limit):
+                return ChatResponse(success=False, ai_response=f"⚠️ You've used your {daily_limit} free AI follow-up questions for today!\n\n{PRO_UPGRADE_LINE}")
         # ------------------------------
 
         if not question_id or question_id == GENERAL_CHAT_QUESTION_ID:
