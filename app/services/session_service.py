@@ -51,6 +51,17 @@ class SessionService:
 
     # Removed local _armor_text and used utility
 
+    @staticmethod
+    def _is_same_target(session_data: dict, request: StartSessionRequest) -> bool:
+        """True if the existing session was started for the same exam/course/topic as this request."""
+        if request.past_exam_id:
+            return session_data.get("past_exam_id") == str(request.past_exam_id)
+        if request.topic_id:
+            return session_data.get("topic_id") == str(request.topic_id)
+        if request.course_id:
+            return session_data.get("course_id") == str(request.course_id) and not session_data.get("past_exam_id")
+        return True
+
     async def start_session(
         self,
         conn: AsyncConnection,
@@ -71,6 +82,11 @@ class SessionService:
                 if session_data.get("deadline_ts") and time.time() > float(session_data["deadline_ts"]):
                     # Session expired! Clean it up and allow new session
                     await self.redis.delete(active_session_key)
+                elif not self._is_same_target(session_data, request):
+                    # User picked a different exam/course/topic: abandon the old session instead of resuming it
+                    await self.redis.hset(get_session_key(existing_session_id), "status", "abandoned")
+                    await self.redis.delete(active_session_key)
+                    logger.info("Abandoned active session for new target", session_id=existing_session_id, user_id=str(user_id), mode=request.mode)
                 else:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
@@ -357,6 +373,7 @@ class SessionService:
             "mode": request.mode,
             "course_id": str(request.course_id) if request.course_id else "",
             "topic_id": str(request.topic_id) if request.topic_id else "",
+            "past_exam_id": str(request.past_exam_id) if request.past_exam_id else "",
             "exam_template_id": str(request.exam_template_id) if request.exam_template_id else None,
             "deadline_ts": deadline_ts,
             "seed": seed,
