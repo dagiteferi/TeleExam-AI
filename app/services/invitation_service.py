@@ -160,6 +160,7 @@ class InvitationService:
                 "free_years",
                 "invites_per_year",
                 "years_per_invite",
+                "max_invite_years",
                 "free_courses_ratio",
                 "courses_per_invite",
                 "ai_bonus_per_invite",

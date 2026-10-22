@@ -22,6 +22,11 @@ class InvitationRuleConfig(BaseModel):
         ge=1,
         description="Number of exam years unlocked by each invite (if 1 invite opens multiple years).",
     )
+    max_invite_years: int = Field(
+        default=1,
+        ge=0,
+        description="Maximum extra exam years invites can unlock beyond the free ones; the rest require PRO.",
+    )
 
     # ── Courses Unlock Rules ──
     free_courses_ratio: float = Field(
@@ -43,13 +48,13 @@ class InvitationRuleConfig(BaseModel):
         description="Extra daily free AI explanations granted per invite.",
     )
 
-    # Invites never unlock everything: the newest exam year and the last course are
-    # always PRO-only, so full access requires payment.
+    # Invites never unlock everything: at most max_invite_years extra years, never the
+    # newest year, and never the last course. Full access requires payment.
 
     def _year_invite_cap(self, total_years: int) -> int:
         """Max years a non-PRO user can ever reach (free years stay free even if they cover all years)."""
         free = min(self.free_years, total_years)
-        return max(free, total_years - 1)
+        return max(free, min(total_years - 1, free + self.max_invite_years))
 
     def calculate_unlocked_years_count(self, invite_count: int, total_years: int) -> int:
         """Calculates total count of exam years allowed for this invite count."""
@@ -141,6 +146,7 @@ class InvitationRuleConfig(BaseModel):
             year_rule = f"{self.invites_per_year} invites unlock 1 exam year"
         else:
             year_rule = "1 invite unlocks 1 exam year"
+        year_rule += f" (max {self.max_invite_years} extra year(s) by invites)"
 
         free_rule = (
             f"{self.free_years} oldest year(s) free by default"
@@ -165,6 +171,7 @@ class InvitationRuleUpdate(BaseModel):
     free_years: int | None = Field(default=None, ge=0)
     invites_per_year: int | None = Field(default=None, ge=1)
     years_per_invite: int | None = Field(default=None, ge=1)
+    max_invite_years: int | None = Field(default=None, ge=0)
     free_courses_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
     courses_per_invite: int | None = Field(default=None, ge=1)
     ai_bonus_per_invite: int | None = Field(default=None, ge=0)

@@ -428,11 +428,6 @@ class SessionService:
 
         logger.info("Session started", session_id=session_id, user_id=str(user_id), mode=request.mode, total_questions=total_questions)
 
-        # Referral logic: credit the inviter once, on the invitee's first quiz/exam/practice session
-        from app.services.referral_service import ReferralService
-        await ReferralService().credit_inviter_on_first_session(conn, user_id)
-        await conn.commit()
-
         return StartSessionResponse(
             session_id=uuid.UUID(session_id),
             mode=request.mode,

@@ -85,6 +85,11 @@ class UserService:
             if is_new and user_data.ref_code and user_row:
                 from app.services.referral_service import ReferralService
                 await ReferralService().process_referral_on_user_upsert(conn, user_row.id, user_data.ref_code)
+
+            # An invite only counts once the invitee has chosen a department (idempotent)
+            if user_row and user_row.department_id is not None:
+                from app.services.referral_service import ReferralService
+                await ReferralService().credit_inviter_on_department_chosen(conn, user_row.id)
             
             # Commit the transaction that was auto-started by db_conn's set_config
             await conn.commit()

@@ -192,7 +192,7 @@ async def get_invited_users(
         return []
 
     result = await conn.execute(
-        select(User.id, User.first_name, User.last_name, User.telegram_username, User.created_at, User.telegram_id)
+        select(User.id, User.first_name, User.last_name, User.telegram_username, User.created_at, User.telegram_id, User.department_id)
         .where(User.invited_by_user_id == my_user.id)
         .order_by(User.created_at.desc())
     )
@@ -205,6 +205,8 @@ async def get_invited_users(
             "full_name": display_name(row, fallback="User"),
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "telegram_id": row.telegram_id,
+            # Invites only count once the invitee has chosen a department
+            "department_chosen": row.department_id is not None,
         }
         for row in result.fetchall()
     ]

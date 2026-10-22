@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.models.user import User
 
 # Set on the invitee once their inviter has been credited.
+# The key name predates crediting on department choice; it is kept so nobody is credited twice.
 # "first_quiz_credited" is the older key and is still honoured so nobody is credited twice.
 CREDITED_KEY = "first_session_credited"
 LEGACY_CREDITED_KEY = "first_quiz_credited"
@@ -28,17 +29,17 @@ class ReferralService:
 
         if inviter and inviter.id != user_id:
             # Only link the invitee here; the inviter is credited once the invitee
-            # starts their first session (see credit_inviter_on_first_session).
+            # chooses a department (see credit_inviter_on_department_chosen).
             await conn.execute(
                 update(User)
                 .where(User.id == user_id)
                 .values(invited_by_user_id=inviter.id)
             )
 
-    async def credit_inviter_on_first_session(
+    async def credit_inviter_on_department_chosen(
         self, conn: AsyncConnection, user_id: UUID
     ) -> None:
-        """Credits the inviter with one invite the first time the invitee starts a quiz, exam or practice."""
+        """Credits the inviter with one invite once the invitee has started the bot and chosen a department."""
         state = func.coalesce(User.referral_reward_state, func.jsonb_build_object(), type_=JSONB)
         # Mark the invitee as credited and get their inviter in one statement,
         # so two sessions started at the same time can't credit twice.
@@ -47,6 +48,7 @@ class ReferralService:
             .where(
                 User.id == user_id,
                 User.invited_by_user_id.is_not(None),
+                User.department_id.is_not(None),
                 ~state.has_key(CREDITED_KEY),
                 ~state.has_key(LEGACY_CREDITED_KEY),
             )
