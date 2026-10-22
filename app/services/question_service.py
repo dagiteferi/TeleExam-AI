@@ -119,12 +119,11 @@ class QuestionService:
             fully_unlocked=fully_unlocked,
         )
 
-        unlock_threshold = min(invite_config.invites_to_unlock_all, invite_config.invites_to_unlock_all_courses)
-
         for i, c in enumerate(courses):
             c["is_locked"] = i >= unlocked_count
             if c["is_locked"]:
-                c["required_invites"] = unlock_threshold
+                # None = PRO-only (invites can never unlock every course)
+                c["required_invites"] = invite_config.calculate_required_invites_for_course(i, total_courses)
             else:
                 c["required_invites"] = 0
 

@@ -142,28 +142,30 @@ class SessionService:
 
                 if not fully_unlocked:
                     invite_config = await InvitationService.get_config(conn)
-                    if not invite_config.is_all_unlocked(invite_count):
-                        # Get all years for this dept
-                        avail_years_res = await conn.execute(
-                            select(PastExam.year).distinct().where(PastExam.department_id == pe_data.department_id).order_by(PastExam.year.asc())
-                        )
-                        avail_years = [r[0] for r in avail_years_res.fetchall()]
-                        allowed_years = invite_config.calculate_allowed_years(
+                    # Get all years for this dept
+                    avail_years_res = await conn.execute(
+                        select(PastExam.year).distinct().where(PastExam.department_id == pe_data.department_id).order_by(PastExam.year.asc())
+                    )
+                    avail_years = [r[0] for r in avail_years_res.fetchall()]
+                    allowed_years = invite_config.calculate_allowed_years(
+                        all_years_sorted_asc=avail_years,
+                        invite_count=invite_count,
+                    )
+                    if pe_data.year not in allowed_years:
+                        req_invites = invite_config.calculate_required_invites_for_year(
+                            year=pe_data.year,
                             all_years_sorted_asc=avail_years,
-                            invite_count=invite_count,
-                            fully_unlocked=fully_unlocked,
                         )
-                        if pe_data.year not in allowed_years:
-                            req_invites = invite_config.calculate_required_invites_for_year(
-                                year=pe_data.year,
-                                all_years_sorted_asc=avail_years,
-                            )
+                        if req_invites is None:
+                            message = f"The {pe_data.year} exams are PRO-only. Upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock everything."
+                        else:
                             needed = max(1, req_invites - invite_count)
                             invite_phrase = f"{needed} more friend{'s' if needed > 1 else ''}"
-                            raise HTTPException(
-                                status_code=status.HTTP_403_FORBIDDEN,
-                                detail={"error": {"code": "year_locked", "message": f"Support our mission! Invite {invite_phrase} to unlock the {pe_data.year} exams, or upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock everything."}}
-                            )
+                            message = f"Support our mission! Invite {invite_phrase} to unlock the {pe_data.year} exams, or upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock everything."
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail={"error": {"code": "year_locked", "message": message}}
+                        )
                 # ----------------------------------
 
                 
@@ -262,6 +264,27 @@ class SessionService:
                         }
                     },
                 )
+
+            # Enforce invite-based course locks (same ordering/rules as the course discovery list)
+            if target_dept and not (access and access.fully_unlocks(target_dept)):
+                target_course = request.course_id or await conn.scalar(
+                    select(Topic.course_id).where(Topic.id == request.topic_id)
+                )
+                from app.services.question_service import QuestionService
+                dept_courses = await QuestionService().get_available_courses(conn, telegram_id, department_id=target_dept)
+                locked = next((c for c in dept_courses if c["id"] == target_course and c["is_locked"]), None)
+                if locked:
+                    req_invites = locked["required_invites"]
+                    invite_count = access.invite_count if access else 0
+                    if req_invites is None:
+                        message = f"This course is PRO-only. Upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock everything."
+                    else:
+                        needed = max(1, req_invites - invite_count)
+                        message = f"Invite {needed} more friend{'s' if needed > 1 else ''} to unlock this course, or upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock everything."
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail={"error": {"code": "course_locked", "message": message}},
+                    )
 
             if request.topic_id:
                 questions = await conn.scalars(

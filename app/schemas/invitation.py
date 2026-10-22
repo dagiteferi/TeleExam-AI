@@ -22,11 +22,6 @@ class InvitationRuleConfig(BaseModel):
         ge=1,
         description="Number of exam years unlocked by each invite (if 1 invite opens multiple years).",
     )
-    invites_to_unlock_all_years: int = Field(
-        default=4,
-        ge=0,
-        description="Total invites required to unlock ALL exam years in a department.",
-    )
 
     # ── Courses Unlock Rules ──
     free_courses_ratio: float = Field(
@@ -35,17 +30,10 @@ class InvitationRuleConfig(BaseModel):
         le=1.0,
         description="Proportion of courses unlocked for free by default (0.25 = 25%).",
     )
-    invites_to_unlock_all_courses: int = Field(
-        default=4,
-        ge=0,
-        description="Total invites required to unlock all courses.",
-    )
-
-    # ── Universal Threshold ──
-    invites_to_unlock_all: int = Field(
-        default=4,
-        ge=0,
-        description="Universal invite threshold that unlocks all locked exam years and courses.",
+    courses_per_invite: int = Field(
+        default=1,
+        ge=1,
+        description="Number of extra courses unlocked by each invite.",
     )
 
     # ── Extra Referral Rewards ──
@@ -55,26 +43,24 @@ class InvitationRuleConfig(BaseModel):
         description="Extra daily free AI explanations granted per invite.",
     )
 
-    def is_all_unlocked(self, invite_count: int) -> bool:
-        """True if user has reached the universal threshold or years threshold."""
-        return (
-            invite_count >= self.invites_to_unlock_all
-            or invite_count >= self.invites_to_unlock_all_years
-        )
+    # Invites never unlock everything: the newest exam year and the last course are
+    # always PRO-only, so full access requires payment.
+
+    def _year_invite_cap(self, total_years: int) -> int:
+        """Max years a non-PRO user can ever reach (free years stay free even if they cover all years)."""
+        free = min(self.free_years, total_years)
+        return max(free, total_years - 1)
 
     def calculate_unlocked_years_count(self, invite_count: int, total_years: int) -> int:
         """Calculates total count of exam years allowed for this invite count."""
         if total_years <= 0:
             return 0
-        if self.is_all_unlocked(invite_count):
-            return total_years
-
+        free = min(self.free_years, total_years)
         if self.years_per_invite > 1:
             extra_years = invite_count * self.years_per_invite
         else:
             extra_years = invite_count // self.invites_per_year
-
-        return min(total_years, self.free_years + extra_years)
+        return max(free, min(self._year_invite_cap(total_years), free + extra_years))
 
     def calculate_allowed_years(
         self,
@@ -83,7 +69,7 @@ class InvitationRuleConfig(BaseModel):
         fully_unlocked: bool = False,
     ) -> list[int]:
         """Returns the list of year integers that the user is permitted to access."""
-        if fully_unlocked or self.is_all_unlocked(invite_count):
+        if fully_unlocked:
             return list(all_years_sorted_asc)
 
         unlocked_count = self.calculate_unlocked_years_count(
@@ -96,26 +82,29 @@ class InvitationRuleConfig(BaseModel):
         self,
         year: int,
         all_years_sorted_asc: list[int],
-    ) -> int:
-        """Calculates how many total invites are needed to unlock a specific year."""
+    ) -> int | None:
+        """Total invites needed to unlock a specific year; None means PRO-only."""
         if year not in all_years_sorted_asc:
-            return min(self.invites_to_unlock_all, self.invites_to_unlock_all_years)
+            return None
 
         year_index = all_years_sorted_asc.index(year)
-        # If year falls within the free tier, no invites are required
         if year_index < self.free_years:
             return 0
+        if year_index >= self._year_invite_cap(len(all_years_sorted_asc)):
+            return None
 
         # Number of additional years beyond the free tier (1-based index among locked years)
         additional_year_number = year_index + 1 - self.free_years
 
         if self.years_per_invite > 1:
-            needed = math.ceil(additional_year_number / self.years_per_invite)
-        else:
-            needed = additional_year_number * self.invites_per_year
+            return math.ceil(additional_year_number / self.years_per_invite)
+        return additional_year_number * self.invites_per_year
 
-        max_limit = min(self.invites_to_unlock_all, self.invites_to_unlock_all_years)
-        return min(needed, max_limit)
+    def _free_courses_count(self, total_courses: int) -> int:
+        return min(total_courses, max(1, int(total_courses * self.free_courses_ratio)))
+
+    def _course_invite_cap(self, total_courses: int) -> int:
+        return max(self._free_courses_count(total_courses), total_courses - 1)
 
     def calculate_unlocked_courses_count(
         self,
@@ -126,18 +115,19 @@ class InvitationRuleConfig(BaseModel):
         """Calculates how many courses are unlocked for this user."""
         if total_courses <= 0:
             return 0
-        unlock_threshold = min(self.invites_to_unlock_all, self.invites_to_unlock_all_courses)
-        if fully_unlocked or invite_count >= unlock_threshold:
+        if fully_unlocked:
             return total_courses
+        base = self._free_courses_count(total_courses)
+        return min(self._course_invite_cap(total_courses), base + invite_count * self.courses_per_invite)
 
-        base_unlocked = max(1, int(total_courses * self.free_courses_ratio))
-        remaining_to_unlock = total_courses - base_unlocked
-        if unlock_threshold <= 0:
-            return total_courses
-
-        extra_unlocked_per_invite = remaining_to_unlock / unlock_threshold
-        unlocked = base_unlocked + int(invite_count * extra_unlocked_per_invite)
-        return min(total_courses, max(base_unlocked, unlocked))
+    def calculate_required_invites_for_course(self, course_index: int, total_courses: int) -> int | None:
+        """Total invites needed to unlock the course at this position; None means PRO-only."""
+        base = self._free_courses_count(total_courses)
+        if course_index < base:
+            return 0
+        if course_index >= self._course_invite_cap(total_courses):
+            return None
+        return math.ceil((course_index + 1 - base) / self.courses_per_invite)
 
     def calculate_ai_daily_limit(self, invite_count: int, base_limit: int = 5) -> int:
         """Calculates daily free AI quota including bonus for invites."""
@@ -157,24 +147,26 @@ class InvitationRuleConfig(BaseModel):
             if self.free_years > 0
             else "0 free years"
         )
-        all_rule = f"{self.invites_to_unlock_all} invites unlock all content"
+        course_rule = (
+            f"{round(self.free_courses_ratio * 100)}% of courses free, "
+            f"+{self.courses_per_invite} course(s) per invite"
+        )
+        all_rule = "newest year and full access require PRO"
 
         perks = []
         if self.ai_bonus_per_invite > 0:
             perks.append(f"+{self.ai_bonus_per_invite} daily AI explanations/invite")
 
         perks_summary = f"; Rewards: {', '.join(perks)}" if perks else ""
-        return f"{year_rule}; {free_rule}; {all_rule}{perks_summary}."
+        return f"{year_rule}; {free_rule}; {course_rule}; {all_rule}{perks_summary}."
 
 
 class InvitationRuleUpdate(BaseModel):
     free_years: int | None = Field(default=None, ge=0)
     invites_per_year: int | None = Field(default=None, ge=1)
     years_per_invite: int | None = Field(default=None, ge=1)
-    invites_to_unlock_all_years: int | None = Field(default=None, ge=0)
     free_courses_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
-    invites_to_unlock_all_courses: int | None = Field(default=None, ge=0)
-    invites_to_unlock_all: int | None = Field(default=None, ge=0)
+    courses_per_invite: int | None = Field(default=None, ge=1)
     ai_bonus_per_invite: int | None = Field(default=None, ge=0)
 
 

@@ -106,7 +106,7 @@ class InvitationService:
                 value=json_val,
                 description=(
                     "Configurable rules for referral invitations: exam years unlocked per invite, "
-                    "free baseline years, courses ratio, and universal unlock threshold."
+                    "free baseline years, free courses ratio and courses per invite. Full access requires PRO."
                 ),
                 is_public=True,
                 created_at=now,
@@ -160,10 +160,8 @@ class InvitationService:
                 "free_years",
                 "invites_per_year",
                 "years_per_invite",
-                "invites_to_unlock_all_years",
                 "free_courses_ratio",
-                "invites_to_unlock_all_courses",
-                "invites_to_unlock_all",
+                "courses_per_invite",
                 "ai_bonus_per_invite",
             ]
             fb_stmt = select(AppSetting.key, AppSetting.value).where(AppSetting.key.in_(fallback_keys))
