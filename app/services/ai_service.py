@@ -49,6 +49,15 @@ async def _consume_free_ai_use(redis: Redis, usage_key: str, daily_limit: int = 
     return True
 
 
+async def _release_db(conn: AsyncConnection) -> None:
+    """
+    Returns the request's DB connection to the pool before the slow LLM call.
+    Everything the prompt needs is already loaded, so the AI call doesn't need the DB;
+    holding the connection for the whole call would let a few AI requests exhaust the pool.
+    """
+    await conn.close()
+
+
 async def _refund_free_ai_use(redis: Redis, usage_key: str | None) -> None:
     """Gives back a free AI request that failed before producing an answer."""
     if usage_key:
@@ -85,7 +94,8 @@ class AiService:
         # ------------------------------
 
         # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
-        question_details = await fetch_question_details(question_id, telegram_id=telegram_id)
+        question_details = await fetch_question_details(question_id, conn=conn)
+        await _release_db(conn)
         if not question_details:
             await _refund_free_ai_use(redis, usage_key)
             return ExplainResponse(success=False, explanation="Question context unavailable or access denied.")
@@ -161,7 +171,7 @@ class AiService:
             full_message = message
         else:
             # SECURE: Pass student's telegram_id to activate RLS for fetch_question_details
-            q_details = await fetch_question_details(question_id, telegram_id=telegram_id)
+            q_details = await fetch_question_details(question_id, conn=conn)
             if not q_details:
                 await _refund_free_ai_use(redis, usage_key)
                 return ChatResponse(success=False, ai_response="Question context unavailable or access denied.")
@@ -180,6 +190,8 @@ class AiService:
             )
 
             full_message = f"{context_prefix}USER QUESTION: {message}"
+
+        await _release_db(conn)
         try:
             result = await self.ai_graph.invoke(full_message, instructions, config={"configurable": {"session_id": str(telegram_id)}})
         except Exception:
@@ -283,6 +295,7 @@ class AiService:
             "Create a 7-day plan cycling through the top weak topics. Be concise."
         )
 
+        await _release_db(conn)
         result = await self.ai_graph.invoke(
             ai_context, instructions,
             config={"configurable": {"session_id": str(telegram_id)}}

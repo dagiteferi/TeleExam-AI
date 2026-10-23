@@ -39,6 +39,7 @@ class AiGraph:
             model_name=groq_model,
             max_tokens=512,
             max_retries=2,
+            timeout=30,  # seconds per attempt, so a stuck Groq call can't hang the request
         )
         # We only use the identity-safe topics tool.
         # get_question_details is removed as context is passed in the prompt.

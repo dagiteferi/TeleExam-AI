@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import uuid as _uuid
 import datetime
 import logging
@@ -89,14 +90,18 @@ async def submit_payment_request(
         file_ext = file.filename.split('.')[-1] if file.filename else "jpg"
         file_name = f"{user['id']}_{_uuid.uuid4()}.{file_ext}"
 
-        supabase.storage.from_("payment-receipts").upload(
+        # The supabase client is synchronous: run it in a worker thread so a slow
+        # upload doesn't freeze the event loop (and every other user) while it runs.
+        bucket = supabase.storage.from_("payment-receipts")
+        await asyncio.to_thread(
+            bucket.upload,
             path=file_name,
             file=file_bytes,
-            file_options={"content-type": file.content_type or "image/jpeg"}
+            file_options={"content-type": file.content_type or "image/jpeg"},
         )
 
         # Get public URL
-        public_url = supabase.storage.from_("payment-receipts").get_public_url(file_name)
+        public_url = await asyncio.to_thread(bucket.get_public_url, file_name)
     except Exception as e:
         logger.error(f"Failed to upload screenshot: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to upload screenshot to storage: {str(e)}")
