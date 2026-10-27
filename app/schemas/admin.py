@@ -194,6 +194,7 @@ class DashboardSummaryResponse(BaseModel):
     total_users: int
     user_growth_percent: float
     total_exams: int
+    total_departments: int
     today_dau: int
     banned_users: int
     chart_data: list[DailyActiveUser]

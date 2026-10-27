@@ -1,6 +1,7 @@
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, time
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -8,7 +9,7 @@ from sqlalchemy import text, func, select, Integer
 
 from app.admin.deps import require_permission
 from app.db.postgres import db_conn
-from app.models.activity_log import ActivityLog
+from app.models.department import Department
 from app.models.user import User
 from app.models.exam_result import ExamResult
 from app.models.question import Question
@@ -21,29 +22,59 @@ async def get_admin_db():
 
 router = APIRouter(prefix="/stats", dependencies=[Depends(require_permission("view_stats"))])
 
+# Users are in Ethiopia, so "a day" is an Addis Ababa calendar day, not a UTC one.
+STATS_TZ = ZoneInfo("Africa/Addis_Ababa")
+
+# A user counts as active on a day if they signed up, answered a question or
+# submitted an exam/practice session that day. activity_logs is included so
+# events start counting automatically once something writes to it.
+_DAU_QUERY = text("""
+    WITH activity AS (
+        SELECT id AS user_id, created_at AS ts FROM users
+            WHERE created_at >= :start_ts AND created_at < :end_ts
+        UNION ALL
+        SELECT user_id, submitted_at FROM exam_results
+            WHERE submitted_at >= :start_ts AND submitted_at < :end_ts
+        UNION ALL
+        SELECT user_id, answered_at FROM user_answers
+            WHERE answered_at >= :start_ts AND answered_at < :end_ts
+        UNION ALL
+        SELECT user_id, event_ts FROM activity_logs
+            WHERE user_id IS NOT NULL AND event_ts >= :start_ts AND event_ts < :end_ts
+    ),
+    days AS (
+        SELECT CAST(d AS DATE) AS day
+        FROM generate_series(CAST(:start_date AS DATE), CAST(:end_date AS DATE), INTERVAL '1 day') AS d
+    )
+    SELECT days.day, COUNT(DISTINCT activity.user_id) AS dau
+    FROM days
+    LEFT JOIN activity ON CAST(activity.ts AT TIME ZONE CAST(:tz AS TEXT) AS DATE) = days.day
+    GROUP BY days.day
+    ORDER BY days.day
+""")
+
+
+async def _daily_active_users(conn: AsyncConnection, start_date: date, end_date: date) -> list[dict]:
+    """One entry per day in [start_date, end_date], zero-filled for days with no activity."""
+    result = await conn.execute(_DAU_QUERY, {
+        "start_date": start_date,
+        "end_date": end_date,
+        "start_ts": datetime.combine(start_date, time.min, STATS_TZ),
+        "end_ts": datetime.combine(end_date + timedelta(days=1), time.min, STATS_TZ),
+        "tz": STATS_TZ.key,
+    })
+    return [{"day": datetime.combine(row.day, time.min), "dau": row.dau or 0} for row in result]
+
+
 @router.get("/dau", response_model=DAUResponse)
 async def get_daily_active_users(
     start_date: date,
     end_date: date,
     conn: AsyncConnection = Depends(get_admin_db),
 ) -> DAUResponse:
-    query = text("""
-        SELECT date_trunc('day', event_ts) AS day, COUNT(DISTINCT user_id) AS dau
-        FROM activity_logs
-        WHERE event_ts >= CAST(:start_date AS DATE) AND event_ts < CAST(:end_date AS DATE) + INTERVAL '1 day'
-        GROUP BY 1
-        ORDER BY 1
-    """)
-    result = await conn.execute(query, {"start_date": start_date, "end_date": end_date})
-    dau_data = []
-    for row in result:
-        day_val = row.day
-        if day_val:
-           # Ensure we return a datetime object for Pydantic
-           dt = day_val if isinstance(day_val, datetime) else datetime.combine(day_val, datetime.min.time())
-           dau_data.append({"day": dt, "dau": row.dau or 0})
-    
-    return DAUResponse(data=dau_data)
+    if end_date < start_date:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="end_date must be on or after start_date")
+    return DAUResponse(data=await _daily_active_users(conn, start_date, end_date))
 
 @router.get("/referrals", response_model=ReferralStatsResponse)
 async def get_referral_stats(
@@ -122,43 +153,27 @@ async def get_dashboard_summary(
 ) -> DashboardSummaryResponse:
     # 1. Basic counts
     total_users = await conn.scalar(select(func.count(User.id))) or 0
-    total_exams = await conn.scalar(select(func.count(ExamResult.id)).where(ExamResult.mode == "exam")) or 0
+    total_exams = await conn.scalar(select(func.count(ExamResult.id))) or 0  # every submitted session, all modes
+    total_departments = await conn.scalar(select(func.count(Department.id))) or 0
     banned_users = await conn.scalar(select(func.count(User.id)).where(User.is_banned == True)) or 0
 
     # 2. Growth calculation
-    thirty_days_ago = datetime.now() - timedelta(days=30)
+    thirty_days_ago = datetime.now(STATS_TZ) - timedelta(days=30)
     old_users = await conn.scalar(select(func.count(User.id)).where(User.created_at < thirty_days_ago)) or 0
     growth = 0.0
     if old_users > 0:
         growth = round(((total_users - old_users) / old_users) * 100, 1)
 
-    # 3. Today's DAU
-    today = date.today()
-    today_dau = await conn.scalar(
-        select(func.count(func.distinct(ActivityLog.user_id)))
-        .where(ActivityLog.event_ts >= today)
-    ) or 0
-
-    # 4. Chart Data (14 days)
-    start_date = today - timedelta(days=13)
-    query = text("""
-        SELECT date_trunc('day', event_ts) AS day, COUNT(DISTINCT user_id) AS dau
-        FROM activity_logs
-        WHERE event_ts >= CAST(:start_date AS DATE) AND event_ts < CAST(:end_date AS DATE) + INTERVAL '1 day'
-        GROUP BY 1 ORDER BY 1
-    """)
-    result = await conn.execute(query, {"start_date": start_date, "end_date": today})
-    chart_data = []
-    for row in result:
-        day_val = row.day
-        if day_val:
-            dt = day_val if isinstance(day_val, datetime) else datetime.combine(day_val, datetime.min.time())
-            chart_data.append({"day": dt, "dau": row.dau or 0})
+    # 3. Chart data (last 14 days, today included) — today's DAU is its last point
+    today = datetime.now(STATS_TZ).date()
+    chart_data = await _daily_active_users(conn, today - timedelta(days=13), today)
+    today_dau = chart_data[-1]["dau"]
 
     return DashboardSummaryResponse(
         total_users=total_users,
         user_growth_percent=growth,
         total_exams=total_exams,
+        total_departments=total_departments,
         today_dau=today_dau,
         banned_users=banned_users,
         chart_data=chart_data
