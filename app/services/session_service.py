@@ -26,7 +26,7 @@ from app.models.question import Question
 from app.models.past_exam import PastExam, PastExamQuestion
 from app.models.exam_template import ExamTemplate, ExamTemplateTopic
 from app.models.user import User
-from app.services.access_service import AccessService
+from app.services.access_service import AccessService, UserAccess
 from app.services.invitation_service import InvitationService
 from app.schemas.sessions import (
     SessionMode,
@@ -68,7 +68,9 @@ class SessionService:
         telegram_id: int,
         user_id: uuid.UUID,
         request: StartSessionRequest,
+        access: UserAccess | None = None,
     ) -> StartSessionResponse:
+        """`access` can be passed when the caller already loaded the user, saving a lookup."""
         # 1. Enforce single active session per user per mode
         active_session_key = get_active_session_key(user_id, request.mode)
         existing_session_id = await self.redis.get(active_session_key)
@@ -121,7 +123,8 @@ class SessionService:
                 if not pe_data:
                     raise HTTPException(status_code=404, detail="Past exam not found")
 
-                access = await AccessService.get_by_user_id(conn, user_id)
+                if access is None:
+                    access = await AccessService.get_by_user_id(conn, user_id)
                 if access and not access.can_use_department(pe_data.department_id):
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
@@ -241,7 +244,8 @@ class SessionService:
                 rng.shuffle(question_ids)
 
         elif request.mode == "practice":
-            access = await AccessService.get_by_user_id(conn, user_id)
+            if access is None:
+                access = await AccessService.get_by_user_id(conn, user_id)
             target_dept = None
             if request.course_id:
                 target_dept = await conn.scalar(select(Course.department_id).where(Course.id == request.course_id))
@@ -271,7 +275,7 @@ class SessionService:
                     select(Topic.course_id).where(Topic.id == request.topic_id)
                 )
                 from app.services.question_service import QuestionService
-                dept_courses = await QuestionService().get_available_courses(conn, telegram_id, department_id=target_dept)
+                dept_courses = await QuestionService().get_available_courses(conn, telegram_id, department_id=target_dept, access=access)
                 locked = next((c for c in dept_courses if c["id"] == target_course and c["is_locked"]), None)
                 if locked:
                     req_invites = locked["required_invites"]
@@ -491,15 +495,23 @@ class SessionService:
             
         question_uuid = question_ids[current_index]
         from app.models.past_exam import PastExam, PastExamQuestion
+        from app.models.bookmark import Bookmark
+        # Bookmark flag comes back with the question so it costs no extra round trip
+        is_bookmarked = (
+            select(Bookmark.id)
+            .where(Bookmark.user_id == uuid.UUID(session_data["user_id"]), Bookmark.question_id == Question.id)
+            .exists()
+        )
         query = (
             select(
-                Question.prompt, 
-                Question.choice_a, 
-                Question.choice_b, 
-                Question.choice_c, 
+                Question.prompt,
+                Question.choice_a,
+                Question.choice_b,
+                Question.choice_c,
                 Question.choice_d,
-                PastExam.year, 
-                PastExam.semester
+                PastExam.year,
+                PastExam.semester,
+                is_bookmarked.label("is_bookmarked"),
             )
             .outerjoin(PastExamQuestion, Question.id == PastExamQuestion.question_id)
             .outerjoin(PastExam, PastExamQuestion.past_exam_id == PastExam.id)
@@ -524,16 +536,6 @@ class SessionService:
         served_time_key = get_question_served_time_key(str(session_id), current_index)
         await self.redis.set(served_time_key, datetime.datetime.now(datetime.timezone.utc).timestamp(), ex=3600)
 
-        # Check if bookmarked
-        from app.models.bookmark import Bookmark
-        import uuid as _uuid
-        bm_query = select(Bookmark.id).where(
-            Bookmark.user_id == _uuid.UUID(session_data["user_id"]),
-            Bookmark.question_id == _uuid.UUID(question_uuid)
-        )
-        bm_result = await conn.execute(bm_query)
-        is_bookmarked = bm_result.scalar_one_or_none() is not None
-
         # Build payload using the row attributes
         payload = QuestionPayload(
             question_id=uuid.UUID(question_uuid),
@@ -549,7 +551,7 @@ class SessionService:
             qtoken=qtoken,
             year=row.year,
             semester=row.semester,
-            is_bookmarked=is_bookmarked
+            is_bookmarked=bool(row.is_bookmarked)
         )
         
         return GetQuestionResponse(session_id=session_id, question=payload)
@@ -560,6 +562,9 @@ class SessionService:
         
         if not session_data or session_data["status"] != "in_progress":
              raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": {"code": "session_inactive", "message": "Session is inactive."}})
+
+        if int(session_data["telegram_id"]) != telegram_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"error": {"code": "access_denied", "message": "Access denied."}})
 
         # Deadline check
         if session_data.get("deadline_ts"):
@@ -638,12 +643,15 @@ class SessionService:
 
         return SubmitAnswerResponse(accepted=True, is_correct=is_correct, explanation=explanation, correct_choice=correct_choice)
 
-    async def next_question(self, conn: AsyncConnection, telegram_id: int, session_id: uuid.UUID) -> NextResponse:
+    async def next_question(self, telegram_id: int, session_id: uuid.UUID) -> NextResponse:
         session_key = get_session_key(str(session_id))
         session_data = await self.redis.hgetall(session_key)
         
         if not session_data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+        if int(session_data["telegram_id"]) != telegram_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"error": {"code": "access_denied", "message": "Access denied."}})
 
         current_index = int(session_data["current_index"])
         total = int(session_data["total_questions"])
@@ -667,6 +675,9 @@ class SessionService:
         if not session_data or session_data["status"] == "completed":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"error": {"code": "already_submitted"}})
 
+        if int(session_data["telegram_id"]) != telegram_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"error": {"code": "access_denied", "message": "Access denied."}})
+
         answers_dict = json.loads(session_data["answers"])
         question_ids = json.loads(session_data["question_ids"])
         
@@ -679,6 +690,7 @@ class SessionService:
         
         correct_count = 0
         wrong_count = 0
+        topic_errors: dict[uuid.UUID, int] = {}
         for q_id, ans in answers_dict.items():
             if q_id in q_map:
                 is_correct = (ans["selected_choice"] == q_map[q_id]["correct"])
@@ -687,9 +699,12 @@ class SessionService:
                     correct_count += 1
                 else:
                     wrong_count += 1
-                    # Record topic error for analytics
-                    await analytics.record_user_topic_error(conn, uuid.UUID(session_data["user_id"]), q_map[q_id]["topic"])
-        
+                    topic = q_map[q_id]["topic"]
+                    topic_errors[topic] = topic_errors.get(topic, 0) + 1
+
+        # Record topic errors for analytics in one statement instead of one per wrong answer
+        await analytics.record_user_topic_errors(conn, uuid.UUID(session_data["user_id"]), topic_errors)
+
         answered_count = correct_count + wrong_count
         # Exams and quizzes are scored over every question in the session (unanswered = not correct).
         # Practice is open-ended (a whole course bank), so it is scored over what the student answered.

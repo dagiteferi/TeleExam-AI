@@ -48,7 +48,7 @@ class ResultsService:
                 score=int(r.score_percent),
                 date=r.submitted_at.isoformat()
             )
-            for r in recent_res.scalars()
+            for r in recent_res
         ]
 
         # 4. Get weak topics (dummy for now, but could be implemented similarly)
@@ -80,7 +80,8 @@ class ResultsService:
 
         # 3. Get ExamResult
         result_stmt = select(ExamResult).where(ExamResult.id == session_uuid, ExamResult.user_id == user_id)
-        result = (await conn.execute(result_stmt)).scalar_one_or_none()
+        # Core connection: scalar_one_or_none() would return only the id column, not the row
+        result = (await conn.execute(result_stmt)).one_or_none()
         
         if not result:
             return SessionResultResponse(success=False, session_id=session_id, mode="", score=0, total_questions=0, correct_answers=0, incorrect_answers=0)

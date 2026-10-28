@@ -39,6 +39,17 @@ async def get_db_conn(
         yield conn
 
 
+async def get_read_db_conn(
+    telegram_id: Annotated[int, Depends(get_current_telegram_id)]
+) -> AsyncConnection:
+    """
+    Like get_db_conn, but for routes that only read: runs in autocommit, which saves
+    two DB round trips per request. Never use it on a route that writes.
+    """
+    async with db_conn(telegram_id=telegram_id, read_only=True) as conn:
+        yield conn
+
+
 async def get_public_db_conn() -> AsyncConnection:
     """
     Provides a public database connection (no RLS context).
@@ -58,4 +69,5 @@ async def get_redis(
 
 CurrentTelegramId = Annotated[int, Depends(get_current_telegram_id)]
 DbConn = Annotated[AsyncConnection, Depends(get_db_conn)]
+ReadDbConn = Annotated[AsyncConnection, Depends(get_read_db_conn)]
 RedisConn = Annotated[Redis, Depends(get_redis)]

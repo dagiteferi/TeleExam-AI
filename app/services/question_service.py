@@ -12,7 +12,7 @@ from app.models.past_exam import PastExam, PastExamQuestion
 from app.models.course import Course
 from app.models.topic import Topic
 from app.models.department import Department
-from app.services.access_service import AccessService
+from app.services.access_service import AccessService, UserAccess
 from app.services.invitation_service import InvitationService
 
 
@@ -94,8 +94,9 @@ class QuestionService:
             "total_count": len(questions_list)
         }
 
-    async def get_available_courses(self, conn: AsyncConnection, telegram_id: int | None = None, department_id: uuid.UUID | None = None) -> list[dict]:
-        """Fetch unique course names and their IDs, optionally filtered by department. 1/4 free, rest locked based on invites."""
+    async def get_available_courses(self, conn: AsyncConnection, telegram_id: int | None = None, department_id: uuid.UUID | None = None, access: UserAccess | None = None) -> list[dict]:
+        """Fetch unique course names and their IDs, optionally filtered by department. 1/4 free, rest locked based on invites.
+        Pass `access` if the caller already has it to skip looking the user up again."""
         query = select(Course.id, Course.name, Course.department_id).where(Course.is_active == True)
         if department_id:
             query = query.where(Course.department_id == department_id)
@@ -104,7 +105,8 @@ class QuestionService:
         result = await conn.execute(query)
         courses = [{"id": row.id, "name": row.name, "department_id": row.department_id} for row in result]
 
-        access = await AccessService.get_by_telegram_id(conn, telegram_id)
+        if access is None:
+            access = await AccessService.get_by_telegram_id(conn, telegram_id)
         if department_id and access and not access.can_use_department(department_id):
             return []
 
@@ -183,6 +185,7 @@ class QuestionService:
 
     async def get_topics_by_course(self, conn: AsyncConnection, course_id: uuid.UUID) -> list[dict]:
         """Fetch all topics associated with a specific course."""
-        query = select(Topic.id, Topic.name).where(Topic.course_id == course_id, Topic.is_active == True)
+        # topics have no is_active column
+        query = select(Topic.id, Topic.name).where(Topic.course_id == course_id)
         result = await conn.execute(query)
         return [{"id": row.id, "name": row.name} for row in result]

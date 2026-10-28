@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncConnection
 from redis.asyncio import Redis
 
-from app.api.deps import get_current_telegram_id, get_db_conn, get_redis
+from app.admin.deps import require_superadmin
+from app.api.deps import get_current_telegram_id, get_db_conn, get_read_db_conn, get_redis
 from app.schemas.sessions import (
     SessionMode,
     StartSessionRequest,
@@ -18,6 +19,7 @@ from app.schemas.sessions import (
     NextResponse,
     SubmitSessionResponse,
 )
+from app.services.access_service import AccessService
 from app.services.session_service import SessionService
 from app.models.user import User # Needed to get user_id from telegram_id
 from sqlalchemy import select
@@ -42,7 +44,7 @@ async def start_session(
         )
 
     return await SessionService(redis).start_session(
-        conn, telegram_id, user.id, request_data
+        conn, telegram_id, user.id, request_data, access=AccessService.from_row(user)
     )
 
 
@@ -50,7 +52,6 @@ async def start_session(
 async def get_session_metadata(
     session_id: uuid.UUID,
     telegram_id: Annotated[int, Depends(get_current_telegram_id)],
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> dict:
     # Fetch real metadata from Redis via SessionService
@@ -61,7 +62,7 @@ async def get_session_metadata(
 async def get_question(
     session_id: uuid.UUID,
     telegram_id: Annotated[int, Depends(get_current_telegram_id)],
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)],
+    conn: Annotated[AsyncConnection, Depends(get_read_db_conn)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> GetQuestionResponse:
     # This will be implemented in SessionService
@@ -84,11 +85,10 @@ async def submit_answer(
 async def next_question(
     session_id: uuid.UUID,
     telegram_id: Annotated[int, Depends(get_current_telegram_id)],
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> NextResponse:
-    # This will be implemented in SessionService
-    return await SessionService(redis).next_question(conn, telegram_id, session_id)
+    # Redis only: no DB connection needed
+    return await SessionService(redis).next_question(telegram_id, session_id)
 
 
 @router.post("/{session_id}/submit", response_model=SubmitSessionResponse)
@@ -102,13 +102,13 @@ async def submit_session(
     return await SessionService(redis).submit_session(conn, telegram_id, session_id)
 
 
-@router.get("/danger/reset-all")
+@router.get("/danger/reset-all", dependencies=[Depends(require_superadmin)])
 async def emergency_reset_all_sessions(
     redis: Annotated[Redis, Depends(get_redis)],
 ):
     """
     EMERGENCY ONLY: Clears all active session pointers in Redis.
-    This fixes the 404/409 deadlock for all users.
+    This fixes the 404/409 deadlock for all users. Superadmin only.
     """
     keys = await redis.keys("teleexam:user:*:active_session:*")
     if keys:

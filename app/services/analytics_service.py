@@ -27,6 +27,22 @@ class AnalyticsService:
         )
         await conn.execute(stmt)
 
+    async def record_user_topic_errors(
+        self, conn: AsyncConnection, user_id: UUID, error_counts: dict[UUID, int]
+    ) -> None:
+        """Same as record_user_topic_error, for many topics in one statement."""
+        if not error_counts:
+            return
+        stmt = pg_insert(UserTopicError).values([
+            {"user_id": user_id, "topic_id": topic_id, "error_count": count}
+            for topic_id, count in error_counts.items()
+        ])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id", "topic_id"],
+            set_={"error_count": UserTopicError.error_count + stmt.excluded.error_count}
+        )
+        await conn.execute(stmt)
+
     async def get_weak_topics_for_user(
         self, conn: AsyncConnection, user_id: UUID
     ) -> list[dict]:

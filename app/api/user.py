@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import select, update
 
-from app.api.deps import get_current_telegram_id, get_db_conn
+from app.api.deps import get_current_telegram_id, get_db_conn, get_read_db_conn
 from app.core.config import settings
 from app.core.utils import display_name
 from app.models.department import Department
@@ -63,7 +63,7 @@ async def upsert_user(
 @router.get("/me", response_model=UserResponse)
 async def get_my_profile(
     telegram_id: int = Depends(get_current_telegram_id),
-    conn: AsyncConnection = Depends(get_db_conn),
+    conn: AsyncConnection = Depends(get_read_db_conn),
 ) -> UserResponse:
     user = await UserService().get_user_by_telegram_id(conn, telegram_id=telegram_id)
     if not user:
@@ -182,7 +182,7 @@ async def set_active_department(
 @router.get("/invited")
 async def get_invited_users(
     telegram_id: int = Depends(get_current_telegram_id),
-    conn: AsyncConnection = Depends(get_db_conn),
+    conn: AsyncConnection = Depends(get_read_db_conn),
 ) -> list[dict]:
     """
     Returns list of users invited by the current user.

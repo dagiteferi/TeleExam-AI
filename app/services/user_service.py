@@ -91,7 +91,7 @@ class UserService:
                 from app.services.referral_service import ReferralService
                 await ReferralService().credit_inviter_on_department_chosen(conn, user_row.id)
             
-            # Commit the transaction that was auto-started by db_conn's set_config
+            # Commit the transaction auto-started by the first statement above
             await conn.commit()
             return user_row
         except Exception:

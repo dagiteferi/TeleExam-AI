@@ -64,7 +64,8 @@ def get_rate_limit_key(user_id: int, route: str) -> str:
 
 
 BAN_CACHE_KEY_PREFIX = "teleexam:ban:"
-BAN_CACHE_TTL_SECONDS = 60
+# Admin ban/unban deletes the key, so a longer TTL only saves DB lookups
+BAN_CACHE_TTL_SECONDS = 300
 def get_ban_cache_key(telegram_id: int) -> str:
     return f"{BAN_CACHE_KEY_PREFIX}{telegram_id}"
 

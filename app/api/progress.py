@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.deps import CurrentTelegramId, DbConn, RedisConn
+from app.api.deps import CurrentTelegramId, ReadDbConn, RedisConn
 from app.schemas.progress import ProgressResponse
 from app.services.progress_service import ProgressService
 
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/progress")
 
 @router.get("/me", response_model=ProgressResponse)
 async def get_my_progress(
-    conn: DbConn,
+    conn: ReadDbConn,
     telegram_id: CurrentTelegramId,
     redis: RedisConn,
 ) -> ProgressResponse:

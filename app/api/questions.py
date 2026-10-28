@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 logger = structlog.get_logger(__name__)
 
-from app.api.deps import get_current_telegram_id, get_db_conn
+from app.api.deps import get_current_telegram_id, get_read_db_conn
 from app.services.question_service import QuestionService
 from pydantic import BaseModel, UUID4
 
@@ -40,7 +40,7 @@ async def get_questions_by_exam(
     semester: str | None = None,
     mode: Literal["exam", "practice"] = "practice",
     telegram_id: Annotated[int, Depends(get_current_telegram_id)] = None,
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)] = None,
+    conn: Annotated[AsyncConnection, Depends(get_read_db_conn)] = None,
 ) -> DiscoveryResponse:
     """Get questions filtered by department, year, and semester."""
     return await QuestionService().get_questions(
@@ -52,7 +52,7 @@ async def get_questions_by_course(
     course_name: str,
     mode: Literal["exam", "practice"] = "practice",
     telegram_id: Annotated[int, Depends(get_current_telegram_id)] = None,
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)] = None,
+    conn: Annotated[AsyncConnection, Depends(get_read_db_conn)] = None,
 ) -> DiscoveryResponse:
     """Get questions for a specific course across all available years."""
     return await QuestionService().get_questions(
@@ -61,7 +61,7 @@ async def get_questions_by_course(
 
 @router.get("/discovery/courses")
 async def get_available_courses(
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)],
+    conn: Annotated[AsyncConnection, Depends(get_read_db_conn)],
     telegram_id: Annotated[int, Depends(get_current_telegram_id)],
     department_id: uuid.UUID | None = Query(None),
 ) -> list[dict]:
@@ -70,7 +70,7 @@ async def get_available_courses(
 
 @router.get("/discovery/departments")
 async def get_available_departments(
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)],
+    conn: Annotated[AsyncConnection, Depends(get_read_db_conn)],
 ) -> list[dict]:
     """Get all departments."""
     departments = await QuestionService().get_available_departments(conn)
@@ -80,7 +80,7 @@ async def get_available_departments(
 @router.get("/discovery/department/{department_id}/exams")
 async def get_exams_by_department(
     department_id: UUID4,
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)],
+    conn: Annotated[AsyncConnection, Depends(get_read_db_conn)],
     telegram_id: Annotated[int, Depends(get_current_telegram_id)],
 ) -> list[dict]:
     """Get all available years and semesters for a specific department."""
@@ -90,7 +90,7 @@ async def get_exams_by_department(
 @router.get("/discovery/course/{course_id}/topics")
 async def get_topics_by_course(
     course_id: UUID4,
-    conn: Annotated[AsyncConnection, Depends(get_db_conn)],
+    conn: Annotated[AsyncConnection, Depends(get_read_db_conn)],
 ) -> list[dict]:
     """Get all topics for a specific course."""
     return await QuestionService().get_topics_by_course(conn, course_id)
