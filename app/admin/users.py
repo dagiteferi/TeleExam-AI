@@ -14,6 +14,7 @@ from sqlalchemy.orm import aliased
 from app.admin.deps import require_admin, require_superadmin, require_permission, get_admin_db
 from app.db.postgres import db_conn
 from app.db.redis import (
+    ACTIVE_SESSION_KEY_PREFIX,
     get_redis_client,
     get_flag_key,
     get_ban_cache_key,
@@ -618,10 +619,16 @@ async def revoke_dual_degree(
 async def reset_user_access(
     user_id: UUID,
     conn: AsyncConnection = Depends(get_admin_db),
+    redis: Redis = Depends(get_redis_client),
 ) -> PlatformUserResponse:
     """
     Superadmin only.
-    Fully resets a user's access: is_pro=False, is_full_access=False, invite_count=0.
+    Fully resets a user so they start again from the department choice:
+    PRO, full access, plan expiry, invite count, main/second/active department
+    are all cleared and any running exam/practice session is ended.
+    Nothing is deleted: results, answers, bookmarks and payments are kept.
+    referral_reward_state is kept so the inviter is not credited twice when
+    the user picks a department again.
     Notifies the user via Telegram.
     """
     result = await conn.execute(select(User).where(User.id == user_id))
@@ -635,19 +642,37 @@ async def reset_user_access(
     await conn.execute(
         update(User)
         .where(User.id == user_id)
-        .values(is_pro=False, is_full_access=False, invite_count=0)
+        .values(
+            is_pro=False,
+            is_full_access=False,
+            plan_expiry=None,
+            invite_count=0,
+            department_id=None,
+            secondary_department_id=None,
+            secondary_department_unlocked=False,
+            active_department_id=None,
+            updated_at=datetime.datetime.utcnow(),
+        )
     )
     await conn.commit()
+
+    # End running sessions: they belong to the old department.
+    active_keys = [
+        key async for key in redis.scan_iter(match=f"{ACTIVE_SESSION_KEY_PREFIX.format(user_id=user_id)}*")
+    ]
+    if active_keys:
+        await redis.delete(*active_keys)
 
     name = display_name(user)
     await send_telegram_message(
         user["telegram_id"],
-        f"⚠️ <b>Account Access Reset, {name}</b>\n\n"
-        "Your account access has been fully reset by an administrator:\n"
+        f"⚠️ <b>Account Reset, {name}</b>\n\n"
+        "Your account has been fully reset by an administrator:\n"
         "• PRO status: <b>Removed</b>\n"
         "• Full access: <b>Removed</b>\n"
-        "• Invite count: <b>Reset to 0</b>\n\n"
-        "You are now on the Free tier. Contact support if you have questions.",
+        "• Invite count: <b>Reset to 0</b>\n"
+        "• Department: <b>Cleared</b>\n\n"
+        "Your past results are kept. Send /start to choose your department again.",
         refresh_menu=True,
     )
 
