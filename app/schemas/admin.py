@@ -83,6 +83,7 @@ class PlatformUserResponse(BaseModel):
     is_banned: bool
     ban_reason: str | None = None
     banned_until: datetime | None = None
+    can_record: bool = False
     exams_count: int = 0
     avg_score: float | None = None
     created_at: datetime

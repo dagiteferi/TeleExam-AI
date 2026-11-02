@@ -23,6 +23,7 @@ class UserService:
             User.secondary_department_id,
             User.secondary_department_unlocked,
             User.active_department_id,
+            User.can_record,
         ).where(User.telegram_id == telegram_id)
         result = await conn.execute(stmt)
         return result.fetchone()
@@ -62,6 +63,7 @@ class UserService:
                 User.secondary_department_id,
                 User.secondary_department_unlocked,
                 User.active_department_id,
+                User.can_record,
             )
 
             if not update_data:

@@ -32,6 +32,9 @@ class User(Base):
     ban_reason = Column(Text, nullable=True)
     banned_until = Column(DateTime(timezone=True), nullable=True)  # NULL = permanent while is_banned
 
+    # Admin-granted: bot messages to this user are not protected, so they can screenshot/record (marketing)
+    can_record = Column(Boolean, nullable=False, default=False, server_default="false")
+
     
     department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=True)
     secondary_department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=True)

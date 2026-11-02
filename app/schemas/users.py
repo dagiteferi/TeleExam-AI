@@ -43,3 +43,5 @@ class UserResponse(BaseModel):
     # Department currently being studied (the main one unless switched)
     active_department_id: UUID | None = None
     active_department_name: str | None = None
+    # Admin-granted: the bot sends this user unprotected messages (screenshots/recording allowed)
+    can_record: bool = False

@@ -45,6 +45,7 @@ async def build_user_response(conn: AsyncConnection, user) -> UserResponse:
         secondary_department_name=names.get(getattr(user, "secondary_department_id", None)),
         secondary_department_unlocked=bool(getattr(user, "secondary_department_unlocked", False)),
         has_dual_access=access.has_dual_access,
+        can_record=bool(getattr(user, "can_record", False)),
         active_department_id=active_id,
         active_department_name=names.get(active_id),
     )

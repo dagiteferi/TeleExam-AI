@@ -72,6 +72,7 @@ async def get_all_users(
     is_banned: bool | None = None,
     invited_by: UUID | None = None,
     department_id: UUID | None = None,
+    can_record: bool | None = None,
 ) -> list[PlatformUserResponse]:
     """Requires: view_users permission or superadmin."""
     Inviter = aliased(User)
@@ -110,6 +111,7 @@ async def get_all_users(
             User.is_banned,
             User.ban_reason,
             User.banned_until,
+            User.can_record,
             User.created_at,
             User.updated_at,
             func.coalesce(exam_stats_sq.c.exams_count, 0).label("exams_count"),
@@ -144,6 +146,9 @@ async def get_all_users(
 
     if is_banned is not None:
         query = query.where(User.is_banned == is_banned)
+
+    if can_record is not None:
+        query = query.where(User.can_record == can_record)
 
     if invited_by:
         query = query.where(User.invited_by_user_id == invited_by)
@@ -651,6 +656,7 @@ async def reset_user_access(
             secondary_department_id=None,
             secondary_department_unlocked=False,
             active_department_id=None,
+            can_record=False,
             updated_at=datetime.datetime.utcnow(),
         )
     )
@@ -679,6 +685,49 @@ async def reset_user_access(
     updated_result = await conn.execute(select(User).where(User.id == user_id))
     updated_user = updated_result.mappings().one_or_none()
     return PlatformUserResponse(**updated_user)
+
+
+@router.post("/{user_id}/recording", response_model=PlatformUserResponse, dependencies=[Depends(require_superadmin)])
+async def set_user_recording(
+    user_id: UUID,
+    allowed: bool,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> PlatformUserResponse:
+    """
+    Superadmin only.
+    Allows (or stops) screenshots and screen recording of the bot for one user,
+    e.g. the marketing team. Every other user keeps protected messages.
+    """
+    result = await conn.execute(select(User).where(User.id == user_id))
+    user = result.mappings().one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "user_not_found", "message": "User not found"}},
+        )
+
+    await conn.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(can_record=allowed, updated_at=datetime.datetime.utcnow())
+    )
+    await conn.commit()
+
+    # refresh_menu makes the bot reload the profile now, so the change applies at once.
+    await send_telegram_message(
+        user["telegram_id"],
+        (
+            "🎥 <b>Screen recording enabled</b>\n\n"
+            "You can now take screenshots and record the bot. "
+            "Messages sent before this stay protected, so open a new exam or practice to record."
+        )
+        if allowed
+        else "🔒 <b>Screen recording disabled</b>\n\nBot messages are protected again.",
+        refresh_menu=True,
+    )
+
+    updated_result = await conn.execute(select(User).where(User.id == user_id))
+    return PlatformUserResponse(**updated_result.mappings().one())
 
 
 @router.delete("/{user_id}", dependencies=[Depends(require_superadmin)])
