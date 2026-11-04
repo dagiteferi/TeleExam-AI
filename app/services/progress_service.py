@@ -8,13 +8,12 @@ from redis.asyncio import Redis
 
 from app.models.user import User
 from app.models.exam_result import ExamResult
-from app.models.user_topic_error import UserTopicError
-from app.models.topic import Topic
 from app.models.course import Course
 from app.models.question import Question
 from app.models.user_answer import UserAnswer
 from app.models.department import Department
 from app.services.access_service import AccessService
+from app.services.analytics_service import AnalyticsService
 from app.schemas.progress import ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo, RecentSession
 from app.db.redis import get_active_session_key, get_session_key
 
@@ -105,18 +104,15 @@ class ProgressService:
                 accuracy_percent=round((correct / total * 100), 1) if total > 0 else 0.0,
             ))
 
-        # 4. Weak topics (top 5 by error count)
-        topic_rows = await conn.execute(
-            select(Topic.name, UserTopicError.error_count)
-            .join(Topic, UserTopicError.topic_id == Topic.id)
-            .join(Course, Topic.course_id == Course.id)
-            .where(UserTopicError.user_id == user_id, in_dept)
-            .order_by(UserTopicError.error_count.desc())
-            .limit(5)
-        )
+        # 4. Weak topics: worst error rate over each topic's recent answers
         weak_topics = [
-            WeakTopic(topic_name=row.name, error_count=row.error_count)
-            for row in topic_rows.fetchall()
+            WeakTopic(
+                topic_name=t["topic_name"],
+                error_count=t["wrong"],
+                attempted=t["attempted"],
+                error_rate_percent=t["error_rate_percent"],
+            )
+            for t in await AnalyticsService().get_weak_topics(conn, user_id, dept_id, limit=5)
         ]
 
         # 5-6, 8. Recent scores, top results and history all come from the user's

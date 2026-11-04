@@ -1,36 +1,33 @@
 from __future__ import annotations
-from sqlalchemy.ext.asyncio import AsyncConnection
+
 from uuid import UUID
 
-class AnalyticsService:
-    async def record_user_topic_error(
-        self, conn: AsyncConnection, user_id: UUID, topic_id: UUID
-    ) -> None:
-        pass
-
-from sqlalchemy import select, update, insert
+from sqlalchemy import select, func, Float, true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from app.models.user_topic_error import UserTopicError
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from app.models.course import Course
 from app.models.topic import Topic
+from app.models.user_answer import UserAnswer
+from app.models.user_topic_error import UserTopicError
+
+# Weak-topic rules: a topic is judged on the student's most recent answers only,
+# so it stops being "weak" once they start getting it right.
+RECENT_ANSWERS_PER_TOPIC = 20
+MIN_ATTEMPTS = 3            # too few answers says nothing about a topic
+MIN_ERROR_RATE = 0.3        # below 30% wrong the topic is not flagged
+
 
 class AnalyticsService:
     async def record_user_topic_error(
         self, conn: AsyncConnection, user_id: UUID, topic_id: UUID
     ) -> None:
-        stmt = pg_insert(UserTopicError).values(
-            user_id=user_id,
-            topic_id=topic_id,
-            error_count=1
-        ).on_conflict_do_update(
-            index_elements=["user_id", "topic_id"],
-            set_={"error_count": UserTopicError.error_count + 1}
-        )
-        await conn.execute(stmt)
+        await self.record_user_topic_errors(conn, user_id, {topic_id: 1})
 
     async def record_user_topic_errors(
         self, conn: AsyncConnection, user_id: UUID, error_counts: dict[UUID, int]
     ) -> None:
-        """Same as record_user_topic_error, for many topics in one statement."""
+        """Lifetime mistake counter per topic (kept for admin/history, not used for ranking)."""
         if not error_counts:
             return
         stmt = pg_insert(UserTopicError).values([
@@ -43,15 +40,59 @@ class AnalyticsService:
         )
         await conn.execute(stmt)
 
-    async def get_weak_topics_for_user(
-        self, conn: AsyncConnection, user_id: UUID
+    async def get_weak_topics(
+        self,
+        conn: AsyncConnection,
+        user_id: UUID,
+        department_id: UUID | None = None,
+        limit: int = 5,
     ) -> list[dict]:
-        query = (
-            select(Topic.name, UserTopicError.error_count)
-            .join(UserTopicError, Topic.id == UserTopicError.topic_id)
-            .where(UserTopicError.user_id == user_id)
-            .order_by(UserTopicError.error_count.desc())
-            .limit(5)
+        """
+        Topics the student is currently weak in, worst first.
+
+        Each topic is scored on its last RECENT_ANSWERS_PER_TOPIC answers as
+        wrong / attempted, so improvement lowers the rate and the topic drops off.
+        Returns dicts with topic_name, wrong, attempted and error_rate_percent.
+        """
+        recent = (
+            select(
+                UserAnswer.topic_id,
+                UserAnswer.is_correct,
+                func.row_number().over(
+                    partition_by=UserAnswer.topic_id,
+                    order_by=UserAnswer.answered_at.desc(),
+                ).label("rn"),
+            )
+            .where(UserAnswer.user_id == user_id)
+            .subquery()
         )
-        result = await conn.execute(query)
-        return [{"topic_name": row.name, "error_count": row.error_count} for row in result]
+
+        attempted = func.count()
+        wrong = func.count().filter(recent.c.is_correct.is_(False))
+        error_rate = wrong.cast(Float) / attempted.cast(Float)
+        in_dept = (Course.department_id == department_id) if department_id else true()
+
+        rows = await conn.execute(
+            select(
+                Topic.name.label("topic_name"),
+                attempted.label("attempted"),
+                wrong.label("wrong"),
+            )
+            .select_from(recent)
+            .join(Topic, Topic.id == recent.c.topic_id)
+            .join(Course, Topic.course_id == Course.id)
+            .where(recent.c.rn <= RECENT_ANSWERS_PER_TOPIC, in_dept)
+            .group_by(Topic.id, Topic.name)
+            .having(attempted >= MIN_ATTEMPTS, error_rate >= MIN_ERROR_RATE)
+            .order_by(error_rate.desc(), wrong.desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "topic_name": row.topic_name,
+                "wrong": int(row.wrong),
+                "attempted": int(row.attempted),
+                "error_rate_percent": round(row.wrong / row.attempted * 100, 1),
+            }
+            for row in rows.fetchall()
+        ]

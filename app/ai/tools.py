@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.db.postgres import db_conn
 from app.models.question import Question
-from app.models.user_topic_error import UserTopicError
-from app.models.topic import Topic
 from app.models.user import User
+from app.services.access_service import AccessService
+from app.services.analytics_service import AnalyticsService
 
 
 # Internal Fetchers with Identity Hardening (Passes telegram_id for RLS enforcement)
@@ -40,18 +40,11 @@ async def fetch_question_details(
     return None
 
 async def fetch_user_weak_topics(user_id: UUID, telegram_id: int | None = None) -> list[dict[str, Any]]:
+    """Current weak topics (recent error rate) in the department the student is studying now."""
     async with db_conn(telegram_id=telegram_id) as conn:
-        query = select(
-            UserTopicError.topic_id,
-            Topic.name.label("topic_name"),
-            UserTopicError.error_count
-        ).join(Topic, UserTopicError.topic_id == Topic.id).where(UserTopicError.user_id == user_id).order_by(UserTopicError.error_count.desc()).limit(5)
-        
-        result = await conn.execute(query)
-        return [
-            {"topic_id": str(row.topic_id), "topic_name": row.topic_name, "error_count": row.error_count}
-            for row in result
-        ]
+        access = await AccessService.get_by_user_id(conn, user_id)
+        dept_id = access.effective_department_id if access else None
+        return await AnalyticsService().get_weak_topics(conn, user_id, dept_id, limit=5)
 
 
 # SECURE AI TOOLS (Zero-parameter to bypass model spoofing risks)

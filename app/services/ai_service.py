@@ -7,10 +7,9 @@ from sqlalchemy import select, func, true
 from app.models.user import User
 from app.models.department import Department
 from app.models.exam_result import ExamResult
-from app.models.user_topic_error import UserTopicError
-from app.models.topic import Topic
 from app.models.course import Course
 from app.services.access_service import AccessService
+from app.services.analytics_service import AnalyticsService
 from app.services.invitation_service import InvitationService
 from app.ai.graph import AiGraph
 from app.ai.tools import fetch_question_details, fetch_user_weak_topics
@@ -33,6 +32,14 @@ PRO_UPGRADE_LINE = (
     f"Upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock all features: "
     "unlimited AI Tutor, all past exams and personalized study plans."
 )
+
+def _focus_for_rate(error_rate_percent: float) -> str:
+    if error_rate_percent >= 60:
+        return "High Priority"
+    if error_rate_percent >= 40:
+        return "Medium"
+    return "Review"
+
 
 # Older bot versions send this instead of omitting question_id for general chat.
 GENERAL_CHAT_QUESTION_ID = "00000000-0000-0000-0000-000000000000"
@@ -253,23 +260,16 @@ class AiService:
         )
         overall = overall_row.fetchone()
 
-        # 4. Fetch per-topic error counts (top 6 weak topics)
-        topic_rows = await conn.execute(
-            select(
-                Topic.name,
-                UserTopicError.error_count
-            ).join(Topic, UserTopicError.topic_id == Topic.id)
-            .join(Course, Topic.course_id == Course.id)
-            .where(UserTopicError.user_id == user.id, in_dept)
-            .order_by(UserTopicError.error_count.desc())
-            .limit(6)
-        )
-        weak_topics_data = topic_rows.fetchall()
+        # 4. Current weak topics: worst error rate over each topic's recent answers
+        weak_topics_data = await AnalyticsService().get_weak_topics(conn, user.id, dept_id, limit=6)
 
         if not weak_topics_data:
             return StudyPlanResponse(
                 success=False,
-                message="No topic error data found yet. Complete more exam questions to get an accurate study plan."
+                message=(
+                    "🎉 No weak topics right now — you are answering most topics correctly. "
+                    "Keep practicing; a plan will appear here if a topic starts slipping."
+                )
             )
 
         avg_score = float(overall.avg_score or 0)
@@ -278,11 +278,12 @@ class AiService:
 
         # 5. Build a compact, token-efficient data context for the AI
         topic_lines = ", ".join([
-            f"{row.name}({row.error_count}errors)" for row in weak_topics_data
+            f"{t['topic_name']}({t['wrong']}/{t['attempted']} wrong, {t['error_rate_percent']:.0f}%)"
+            for t in weak_topics_data
         ])
         ai_context = (
             f"Exams:{exam_count}, AvgScore:{avg_score:.1f}%, WrongAnswers:{total_wrong}. "
-            f"WeakTopics(name,errors): {topic_lines}."
+            f"WeakTopics(name, recent wrong/attempted, error rate): {topic_lines}."
         )
 
         instructions = (
@@ -291,7 +292,8 @@ class AiService:
             '{"summary": "1-2 sentence performance summary", '
             '"weak_topics": [{"topic": "TopicName", "errors": N, "focus": "High Priority|Medium|Review"}], '
             '"daily_plan": [{"day": 1, "topic": "TopicName", "action": "What to do"}]}\n'
-            "Rules: focus = High Priority if errors>5, Medium if 3-5, Review if <3. "
+            "Rules: focus = High Priority if error rate>=60%, Medium if 40-59%, Review if <40%. "
+            "Spend more days on higher error rates. "
             "Create a 7-day plan cycling through the top weak topics. Be concise."
         )
 
@@ -321,11 +323,11 @@ class AiService:
             # Graceful fallback: build plan from raw DB data without AI
             weak_topics = [
                 StudyTopic(
-                    topic=row.name,
-                    errors=row.error_count,
-                    focus="High Priority" if row.error_count > 5 else "Medium" if row.error_count >= 3 else "Review"
+                    topic=t["topic_name"],
+                    errors=t["wrong"],
+                    focus=_focus_for_rate(t["error_rate_percent"]),
                 )
-                for row in weak_topics_data
+                for t in weak_topics_data
             ]
             daily_plan = [
                 StudyDay(day=i + 1, topic=weak_topics[i % len(weak_topics)].topic, action="Review notes and solve past questions")

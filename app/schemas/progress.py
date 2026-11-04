@@ -14,7 +14,9 @@ class CourseProgress(BaseModel):
 
 class WeakTopic(BaseModel):
     topic_name: str
-    error_count: int
+    error_count: int  # wrong answers among the topic's recent answers
+    attempted: int = 0  # recent answers the rate is based on
+    error_rate_percent: float = 0.0
 
 
 class TopExamScore(BaseModel):
