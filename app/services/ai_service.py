@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from uuid import UUID
 import json
 
-from sqlalchemy import select, func, true
+from sqlalchemy import select, func, true, or_
 from app.models.user import User
 from app.models.department import Department
 from app.models.exam_result import ExamResult
@@ -20,7 +20,7 @@ from app.schemas.ai import (
 from app.core.config import settings
 from app.core.utils import armor_text
 from redis.asyncio import Redis
-from app.db.redis import get_ai_usage_key, get_diagnostic_trial_key
+from app.db.redis import get_ai_usage_key
 
 # Singleton: built once at startup, shared by all concurrent requests with active model
 _ai_graph = AiGraph()
@@ -32,6 +32,9 @@ PRO_UPGRADE_LINE = (
     f"Upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock all features: "
     "unlimited AI Tutor, all past exams and personalized study plans."
 )
+
+# PRO features are unlocked by a paid PRO plan or by admin-granted full access.
+_HAS_PRO = or_(User.is_pro.is_(True), User.is_full_access.is_(True)).label("is_pro")
 
 def _focus_for_rate(error_rate_percent: float) -> str:
     if error_rate_percent >= 60:
@@ -85,7 +88,7 @@ class AiService:
         user_answer: str | None,
     ) -> ExplainResponse:
         # --- Referral & Usage Check ---
-        user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.telegram_id == telegram_id))
+        user_row = await conn.execute(select(User.invite_count, _HAS_PRO).where(User.telegram_id == telegram_id))
         user = user_row.fetchone()
         
         if not user:
@@ -144,7 +147,7 @@ class AiService:
         question_id: str | None,
     ) -> ChatResponse:
         # --- Referral & Usage Check ---
-        user_row = await conn.execute(select(User.invite_count, User.is_pro).where(User.telegram_id == telegram_id))
+        user_row = await conn.execute(select(User.invite_count, _HAS_PRO).where(User.telegram_id == telegram_id))
         user = user_row.fetchone()
         
         if not user:
@@ -218,7 +221,7 @@ class AiService:
         redis: Redis,
         telegram_id: int,
     ) -> StudyPlanResponse:
-        user_stmt = select(User.id, User.is_pro).where(User.telegram_id == telegram_id)
+        user_stmt = select(User.id, _HAS_PRO).where(User.telegram_id == telegram_id)
         user_row = await conn.execute(user_stmt)
         user = user_row.fetchone()
         
@@ -343,11 +346,6 @@ class AiService:
             daily_plan=daily_plan,
             total_hours_needed=10 + (len(weak_topics) * 3)
         )
-
-        # 8. Mark trial as used for non-pro users
-        if not user.is_pro:
-            trial_key = get_diagnostic_trial_key(telegram_id)
-            await redis.set(trial_key, "1")
 
         return StudyPlanResponse(
             success=True,

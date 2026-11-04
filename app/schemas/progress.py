@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import date, datetime
 
 
 class CourseProgress(BaseModel):
@@ -40,6 +40,32 @@ class RecentSession(BaseModel):
     question_count: int
     answered_count: int = 0
     submitted_at: datetime
+
+
+class HistoryItem(BaseModel):
+    """One finished session in the results history."""
+    session_id: str
+    mode: str
+    title: str
+    score_percent: float
+    correct_count: int
+    wrong_count: int
+    question_count: int
+    duration_seconds: int
+    submitted_at: datetime
+
+
+class HistoryResponse(BaseModel):
+    """A page of the user's results history, newest first."""
+    department_name: str | None = None
+    mode: str  # "all", "exam" or "practice"
+    date_from: date | None = None  # day filter actually applied (inclusive)
+    date_to: date | None = None
+    page: int
+    page_size: int
+    total: int
+    has_next: bool
+    items: list[HistoryItem]
 
 
 class ProgressResponse(BaseModel):

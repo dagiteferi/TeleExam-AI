@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from datetime import date
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentTelegramId, ReadDbConn, RedisConn
-from app.schemas.progress import ProgressResponse
+from app.schemas.progress import ProgressResponse, HistoryResponse
 from app.services.progress_service import ProgressService
 
 router = APIRouter(prefix="/progress")
@@ -23,3 +26,28 @@ async def get_my_progress(
     """
     return await ProgressService().get_progress(conn, telegram_id, redis=redis)
 
+
+
+@router.get("/history", response_model=HistoryResponse)
+async def get_my_history(
+    conn: ReadDbConn,
+    telegram_id: CurrentTelegramId,
+    mode: Literal["all", "exam", "practice"] = "all",
+    page: int = Query(0, ge=0),
+    page_size: int = Query(10, ge=1, le=50),
+    date_from: date | None = Query(None, description="First day to include (Ethiopian local time, UTC+3)"),
+    date_to: date | None = Query(None, description="Last day to include (inclusive)"),
+) -> HistoryResponse:
+    """
+    The authenticated user's full results history (newest first), paginated,
+    optionally limited to a day range. Scoped to the caller's telegram_id and current department.
+    """
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": {"code": "invalid_range", "message": "date_from must be on or before date_to."}},
+        )
+    return await ProgressService().get_history(
+        conn, telegram_id, mode=mode, page=page, page_size=page_size,
+        date_from=date_from, date_to=date_to,
+    )

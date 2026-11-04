@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 
 from sqlalchemy import select, func, String, true
@@ -14,8 +15,15 @@ from app.models.user_answer import UserAnswer
 from app.models.department import Department
 from app.services.access_service import AccessService
 from app.services.analytics_service import AnalyticsService
-from app.schemas.progress import ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo, RecentSession
+from app.schemas.progress import (
+    ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo, RecentSession,
+    HistoryItem, HistoryResponse,
+)
 from app.db.redis import get_active_session_key, get_session_key
+
+
+# Students are in Ethiopia (UTC+3, no daylight saving): history day filters use local days.
+LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=3))
 
 
 class ProgressService:
@@ -23,6 +31,95 @@ class ProgressService:
     Returns private progress data for a single authenticated user.
     All queries are scoped strictly to the user's own ID — no cross-user leakage.
     """
+
+    async def get_history(
+        self,
+        conn: AsyncConnection,
+        telegram_id: int,
+        mode: str = "all",
+        page: int = 0,
+        page_size: int = 10,
+        date_from: datetime.date | None = None,
+        date_to: datetime.date | None = None,
+    ) -> HistoryResponse:
+        """
+        The user's finished sessions in their current department, newest first.
+        date_from / date_to are whole days in the students' local time (inclusive).
+        """
+        empty = HistoryResponse(
+            mode=mode, page=page, page_size=page_size, total=0, has_next=False, items=[],
+            date_from=date_from, date_to=date_to,
+        )
+        user_id = await conn.scalar(select(User.id).where(User.telegram_id == telegram_id))
+        if not user_id:
+            return empty
+
+        access = await AccessService.get_by_user_id(conn, user_id)
+        dept_id = access.effective_department_id if access else None
+        in_dept = (Course.department_id == dept_id) if dept_id else true()
+        department_name = await conn.scalar(select(Department.name).where(Department.id == dept_id)) if dept_id else None
+
+        filters = [ExamResult.user_id == user_id, in_dept]
+        if mode in ("exam", "practice"):
+            filters.append(ExamResult.mode == mode)
+        # Day boundaries are midnight local time; date_to includes its whole day.
+        if date_from:
+            filters.append(ExamResult.submitted_at >= datetime.datetime.combine(date_from, datetime.time(), LOCAL_TZ))
+        if date_to:
+            next_day = date_to + datetime.timedelta(days=1)
+            filters.append(ExamResult.submitted_at < datetime.datetime.combine(next_day, datetime.time(), LOCAL_TZ))
+
+        total = int(await conn.scalar(
+            select(func.count(ExamResult.id))
+            .join(Course, ExamResult.course_id == Course.id)
+            .where(*filters)
+        ) or 0)
+
+        rows = (await conn.execute(
+            select(
+                ExamResult.id,
+                ExamResult.mode,
+                ExamResult.score_percent,
+                ExamResult.question_count,
+                ExamResult.correct_count,
+                ExamResult.wrong_count,
+                ExamResult.duration_seconds,
+                ExamResult.submitted_at,
+                ExamResult.metadata_,
+                Course.name.label("course_name"),
+            )
+            .join(Course, ExamResult.course_id == Course.id)
+            .where(*filters)
+            .order_by(ExamResult.submitted_at.desc())
+            .offset(page * page_size)
+            .limit(page_size)
+        )).fetchall()
+
+        items = [
+            HistoryItem(
+                session_id=str(row.id),
+                mode=row.mode,
+                title=(row.metadata_ or {}).get("title") or row.course_name or "Exam",
+                score_percent=float(row.score_percent or 0.0),
+                correct_count=int(row.correct_count or 0),
+                wrong_count=int(row.wrong_count or 0),
+                question_count=int(row.question_count or 0),
+                duration_seconds=int(row.duration_seconds or 0),
+                submitted_at=row.submitted_at,
+            )
+            for row in rows
+        ]
+        return HistoryResponse(
+            department_name=department_name,
+            mode=mode,
+            date_from=date_from,
+            date_to=date_to,
+            page=page,
+            page_size=page_size,
+            total=total,
+            has_next=(page + 1) * page_size < total,
+            items=items,
+        )
 
     async def get_progress(
         self,
