@@ -17,7 +17,8 @@ async def explain_question(
     _current_telegram_id: CurrentTelegramId,
 ) -> ExplainResponse:
     return await AiService().explain_question(
-        conn, redis, _current_telegram_id, request.question_id, request.user_answer
+        conn, redis, _current_telegram_id, request.question_id, request.user_answer,
+        source=request.source,
     )
 
 

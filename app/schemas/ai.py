@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 class ExplainRequest(BaseModel):
     question_id: str
     user_answer: str | None = None
+    # "mistakes" = from the Review My Mistakes list (free users: uses the mistakes free trial)
+    source: str | None = None
 
 
 class ExplainResponse(BaseModel):

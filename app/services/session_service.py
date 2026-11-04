@@ -254,18 +254,31 @@ class SessionService:
                 rng.shuffle(question_ids)
 
         elif request.mode == "practice" and request.review_mistakes:
-            # Review My Mistakes (PRO): the student's open mistakes in their current department
+            # Review My Mistakes: the student's open mistakes in their current department.
+            # PRO: everything. Free trial: "Try again" on one of their newest few mistakes,
+            # a limited number of times (see mistakes_trial).
+            from app.services import mistakes_trial
+            from app.services.analytics_service import AnalyticsService
             if access is None:
                 access = await AccessService.get_by_user_id(conn, user_id)
-            if not (access and access.has_pro):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={"error": {"code": "pro_required", "message": "Review My Mistakes is a PRO feature."}},
+            dept_id = access.effective_department_id if access else None
+            is_pro = bool(access and access.has_pro)
+            pro_required = HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "pro_required", "message": "Review My Mistakes is a PRO feature."}},
+            )
+            if not is_pro:
+                if not request.review_question_id:
+                    raise pro_required  # "Practice all mistakes" is PRO only
+                visible = await AnalyticsService().get_open_mistake_ids(
+                    conn, user_id, dept_id, limit=mistakes_trial.FREE_VISIBLE_MISTAKES
                 )
-            from app.services.analytics_service import AnalyticsService
+                if request.review_question_id not in visible:
+                    raise pro_required  # free users can only retry the mistakes they can see
+
             # One question ("Try again") must still be an open mistake of this student
             question_ids = await AnalyticsService().get_open_mistake_ids(
-                conn, user_id, access.effective_department_id,
+                conn, user_id, dept_id,
                 limit=1 if request.review_question_id else REVIEW_MISTAKES_LIMIT,
                 question_id=request.review_question_id,
             )
@@ -273,6 +286,12 @@ class SessionService:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail={"error": {"code": "no_mistakes", "message": "You have no mistakes to review right now."}},
+                )
+            # Resuming an unfinished try was answered above (409) and costs nothing; a new try uses one.
+            if not is_pro and not await mistakes_trial.consume_try(self.redis, telegram_id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={"error": {"code": "trial_used", "message": "Your free tries are used up. Upgrade to PRO."}},
                 )
             rng = random.Random(seed)
             rng.shuffle(question_ids)

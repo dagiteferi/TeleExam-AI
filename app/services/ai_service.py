@@ -11,6 +11,7 @@ from app.models.course import Course
 from app.services.access_service import AccessService
 from app.services.analytics_service import AnalyticsService
 from app.services.invitation_service import InvitationService
+from app.services import mistakes_trial
 from app.ai.graph import AiGraph
 from app.ai.tools import fetch_question_details, fetch_user_weak_topics
 from app.schemas.ai import (
@@ -86,16 +87,26 @@ class AiService:
         telegram_id: int,
         question_id: UUID,
         user_answer: str | None,
+        source: str | None = None,
     ) -> ExplainResponse:
         # --- Referral & Usage Check ---
         user_row = await conn.execute(select(User.invite_count, _HAS_PRO).where(User.telegram_id == telegram_id))
         user = user_row.fetchone()
-        
+
         if not user:
              return ExplainResponse(success=False, explanation="User profile not found.")
 
         usage_key = None
-        if not user.is_pro:
+        mistakes_trial_used = False
+        if not user.is_pro and source == "mistakes":
+            # Review My Mistakes free trial: its own small lifetime allowance, then PRO
+            if not await mistakes_trial.consume_ai(redis, telegram_id):
+                return ExplainResponse(
+                    success=False,
+                    explanation=f"🔒 You've used your free AI explanation in Review My Mistakes.\n\n{PRO_UPGRADE_LINE}",
+                )
+            mistakes_trial_used = True
+        elif not user.is_pro:
             invite_config = await InvitationService.get_config(conn)
             daily_limit = invite_config.calculate_ai_daily_limit(user.invite_count or 0, base_limit=FREE_AI_DAILY_LIMIT)
             usage_key = get_ai_usage_key(telegram_id)
@@ -108,6 +119,8 @@ class AiService:
         await _release_db(conn)
         if not question_details:
             await _refund_free_ai_use(redis, usage_key)
+            if mistakes_trial_used:
+                await mistakes_trial.refund_ai(redis, telegram_id)
             return ExplainResponse(success=False, explanation="Question context unavailable or access denied.")
 
         # Compact prompt: covers all 4 pedagogical steps in fewer tokens
@@ -128,8 +141,15 @@ class AiService:
             result = await self.ai_graph.invoke(prompt_message, instructions, config={"configurable": {"session_id": str(telegram_id)}})
         except Exception:
             await _refund_free_ai_use(redis, usage_key)
+            if mistakes_trial_used:
+                await mistakes_trial.refund_ai(redis, telegram_id)
             raise
         explanation_text = result["messages"][-1].content if result and result["messages"] else "Explanation generation failed."
+        if mistakes_trial_used and (not explanation_text or explanation_text.startswith("⚠️")):
+            # AiGraph returns its "⚠️ AI ... unavailable" text instead of raising: don't spend
+            # the only free trial explanation on a failure.
+            await mistakes_trial.refund_ai(redis, telegram_id)
+            return ExplainResponse(success=False, explanation=explanation_text or "⚠️ AI is temporarily unavailable.")
 
         return ExplainResponse(
             success=True,

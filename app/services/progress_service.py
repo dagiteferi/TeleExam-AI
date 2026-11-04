@@ -16,6 +16,7 @@ from app.models.user_answer import UserAnswer
 from app.models.department import Department
 from app.services.access_service import AccessService
 from app.services.analytics_service import AnalyticsService
+from app.services import mistakes_trial
 from app.schemas.progress import (
     ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo, RecentSession,
     HistoryItem, HistoryResponse, MistakesSummary, MistakeItem, MistakeCourseCount, MistakeListResponse,
@@ -322,27 +323,40 @@ class ProgressService:
         )
 
     async def get_mistakes_list(
-        self, conn: AsyncConnection, telegram_id: int, page: int = 0, page_size: int = 5
+        self, conn: AsyncConnection, telegram_id: int, page: int = 0, page_size: int = 5,
+        redis: Redis | None = None,
     ) -> MistakeListResponse:
         """
         The student's wrong questions (question text only, most recent first) and a
-        per-course summary. PRO only. Never includes choices or the correct answer.
+        per-course summary. Never includes choices or the correct answer.
+        PRO: the whole list. Free: a trial with only the newest few mistakes.
         """
         user_id = await conn.scalar(select(User.id).where(User.telegram_id == telegram_id))
-        access = await AccessService.get_by_user_id(conn, user_id) if user_id else None
-        if not (access and access.has_pro):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={"error": {"code": "pro_required", "message": "Review My Mistakes is a PRO feature."}},
-            )
-        dept_id = access.effective_department_id
+        if not user_id:
+            return MistakeListResponse(total=0, page=0, page_size=page_size, has_next=False)
+        access = await AccessService.get_by_user_id(conn, user_id)
+        is_pro = bool(access and access.has_pro)
+        dept_id = access.effective_department_id if access else None
         analytics = AnalyticsService()
         by_course = await analytics.count_open_mistakes_by_course(conn, user_id, dept_id)
         total = sum(n for _, n in by_course)
-        if total == 0:
-            return MistakeListResponse(total=0, page=0, page_size=page_size, has_next=False)
 
-        last_page = (total - 1) // page_size
+        trial = {}
+        if not is_pro:
+            tries_left, ai_left = await mistakes_trial.trial_left(redis, telegram_id) if redis else (0, 0)
+            visible = min(total, mistakes_trial.FREE_VISIBLE_MISTAKES)
+            trial = dict(
+                is_trial=True,
+                locked_count=total - visible,
+                trial_tries_left=tries_left,
+                trial_ai_left=ai_left,
+            )
+            page, page_size = 0, mistakes_trial.FREE_VISIBLE_MISTAKES  # free: one page, newest only
+
+        if total == 0:
+            return MistakeListResponse(total=0, page=0, page_size=page_size, has_next=False, **trial)
+
+        last_page = 0 if not is_pro else (total - 1) // page_size
         page = min(max(page, 0), last_page)  # the list may have shrunk since the button was made
         rows = await analytics.get_open_mistakes_page(conn, user_id, dept_id, page * page_size, page_size)
 
@@ -366,16 +380,25 @@ class ProgressService:
                 )
                 for row in rows
             ],
+            **trial,
         )
 
-    async def get_mistakes_summary(self, conn: AsyncConnection, telegram_id: int) -> MistakesSummary:
+    async def get_mistakes_summary(
+        self, conn: AsyncConnection, telegram_id: int, redis: Redis | None = None
+    ) -> MistakesSummary:
         user_id = await conn.scalar(select(User.id).where(User.telegram_id == telegram_id))
         if not user_id:
             return MistakesSummary(has_pro=False, count=0)
         access = await AccessService.get_by_user_id(conn, user_id)
         dept_id = access.effective_department_id if access else None
+        has_pro = bool(access and access.has_pro)
+        tries_left = ai_left = None
+        if not has_pro:
+            tries_left, ai_left = await mistakes_trial.trial_left(redis, telegram_id) if redis else (0, 0)
         return MistakesSummary(
-            has_pro=bool(access and access.has_pro),
+            has_pro=has_pro,
             count=await AnalyticsService().count_open_mistakes(conn, user_id, dept_id),
+            trial_tries_left=tries_left,
+            trial_ai_left=ai_left,
         )
 

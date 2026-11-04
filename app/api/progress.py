@@ -57,20 +57,23 @@ async def get_my_history(
 async def get_my_mistakes_summary(
     conn: ReadDbConn,
     telegram_id: CurrentTelegramId,
+    redis: RedisConn,
 ) -> MistakesSummary:
-    """How many questions the user has to review, and whether they can (PRO only)."""
-    return await ProgressService().get_mistakes_summary(conn, telegram_id)
+    """How many questions the user has to review, PRO status and free-trial uses left."""
+    return await ProgressService().get_mistakes_summary(conn, telegram_id, redis=redis)
 
 
 @router.get("/mistakes/list", response_model=MistakeListResponse)
 async def get_my_mistakes_list(
     conn: ReadDbConn,
     telegram_id: CurrentTelegramId,
+    redis: RedisConn,
     page: int = Query(0, ge=0),
     page_size: int = Query(5, ge=1, le=20),
 ) -> MistakeListResponse:
     """
     The questions the user got wrong (question text only, most recent first) with a
-    per-course summary. PRO only. Never includes the choices or the correct answer.
+    per-course summary. Never includes the choices or the correct answer.
+    PRO: the whole list. Free users: a trial with only their newest few mistakes.
     """
-    return await ProgressService().get_mistakes_list(conn, telegram_id, page, page_size)
+    return await ProgressService().get_mistakes_list(conn, telegram_id, page, page_size, redis=redis)

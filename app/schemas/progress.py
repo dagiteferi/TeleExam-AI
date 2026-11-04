@@ -94,6 +94,9 @@ class MistakesSummary(BaseModel):
     """What the Review My Mistakes button needs to know."""
     has_pro: bool
     count: int  # questions whose latest answer was wrong
+    # Free trial (None for PRO users): how many "Try again" / "Ask AI" uses are left
+    trial_tries_left: int | None = None
+    trial_ai_left: int | None = None
 
 
 class MistakeItem(BaseModel):
@@ -118,4 +121,9 @@ class MistakeListResponse(BaseModel):
     has_next: bool
     by_course: list[MistakeCourseCount] = []
     items: list[MistakeItem] = []
+    # Free trial: only the newest few mistakes are shown; the rest are locked behind PRO
+    is_trial: bool = False
+    locked_count: int = 0
+    trial_tries_left: int | None = None
+    trial_ai_left: int | None = None
 
