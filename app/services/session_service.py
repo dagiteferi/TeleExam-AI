@@ -116,6 +116,7 @@ class SessionService:
 
         # 2. Validate user eligibility and retrieve questions
         question_ids: list[uuid.UUID] = []
+        review_trial = False  # free-trial mistakes review: each answer uses a free try
         total_questions: int = 0
         session_ttl_seconds: int = 0
         deadline_ts: float | None = None # Changed to float for timestamp
@@ -255,8 +256,9 @@ class SessionService:
 
         elif request.mode == "practice" and request.review_mistakes:
             # Review My Mistakes: the student's open mistakes in their current department.
-            # PRO: everything. Free trial: "Try again" on one of their newest few mistakes,
-            # a limited number of times (see mistakes_trial).
+            # "Try again" starts at the chosen question and continues (Next) through the other
+            # mistakes in list order. PRO: all of them. Free trial: only the newest few, and each
+            # answered question uses one free try (checked in submit_answer).
             from app.services import mistakes_trial
             from app.services.analytics_service import AnalyticsService
             if access is None:
@@ -267,34 +269,50 @@ class SessionService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={"error": {"code": "pro_required", "message": "Review My Mistakes is a PRO feature."}},
             )
-            if not is_pro:
+            trial_used = HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "trial_used", "message": "Your free tries are used up. Upgrade to PRO."}},
+            )
+            analytics = AnalyticsService()
+            if is_pro:
+                pool = await analytics.get_open_mistake_ids(conn, user_id, dept_id, limit=REVIEW_MISTAKES_LIMIT)
+            else:
                 if not request.review_question_id:
                     raise pro_required  # "Practice all mistakes" is PRO only
-                visible = await AnalyticsService().get_open_mistake_ids(
+                tries_left, _ = await mistakes_trial.trial_left(self.redis, telegram_id)
+                if tries_left <= 0:
+                    raise trial_used
+                pool = await analytics.get_open_mistake_ids(
                     conn, user_id, dept_id, limit=mistakes_trial.FREE_VISIBLE_MISTAKES
                 )
-                if request.review_question_id not in visible:
-                    raise pro_required  # free users can only retry the mistakes they can see
 
-            # One question ("Try again") must still be an open mistake of this student
-            question_ids = await AnalyticsService().get_open_mistake_ids(
-                conn, user_id, dept_id,
-                limit=1 if request.review_question_id else REVIEW_MISTAKES_LIMIT,
-                question_id=request.review_question_id,
-            )
+            if request.review_question_id:
+                if request.review_question_id not in pool:
+                    # Still an open mistake? (PRO: it may be older than the first page of the pool)
+                    still_open = await analytics.get_open_mistake_ids(
+                        conn, user_id, dept_id, limit=1, question_id=request.review_question_id
+                    )
+                    if not still_open:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"error": {"code": "no_mistakes", "message": "This question is no longer in your mistakes."}},
+                        )
+                    if not is_pro:
+                        raise pro_required  # free users can only retry the mistakes they can see
+                # Chosen question first, then the rest of the mistakes in list order
+                question_ids = [request.review_question_id] + [q for q in pool if q != request.review_question_id]
+                question_ids = question_ids[:REVIEW_MISTAKES_LIMIT]
+            else:
+                question_ids = pool
+                rng = random.Random(seed)
+                rng.shuffle(question_ids)
+
             if not question_ids:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail={"error": {"code": "no_mistakes", "message": "You have no mistakes to review right now."}},
                 )
-            # Resuming an unfinished try was answered above (409) and costs nothing; a new try uses one.
-            if not is_pro and not await mistakes_trial.consume_try(self.redis, telegram_id):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={"error": {"code": "trial_used", "message": "Your free tries are used up. Upgrade to PRO."}},
-                )
-            rng = random.Random(seed)
-            rng.shuffle(question_ids)
+            review_trial = not is_pro
             total_questions = len(question_ids)
             title = "Review My Mistakes"
             session_ttl_seconds = settings.DEFAULT_PRACTICE_TTL_SECONDS
@@ -465,6 +483,7 @@ class SessionService:
             "title": title,
             "review_mistakes": "1" if request.review_mistakes else None,
             "review_question_id": str(request.review_question_id) if request.review_question_id else None,
+            "review_trial": "1" if review_trial else None,
         }
 
         # Store session data in Redis Hash
@@ -644,8 +663,18 @@ class SessionService:
         if not stored_token or stored_token != request.qtoken:
              raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"error": {"code": "invalid_qtoken", "message": "Token expired or invalid."}})
         
+        # Free-trial mistakes review: every answered question uses one free try.
+        # Checked before the qtoken is spent, so a blocked user keeps the question token.
+        if session_data.get("review_trial") == "1":
+            from app.services import mistakes_trial
+            if not await mistakes_trial.consume_try(self.redis, telegram_id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={"error": {"code": "trial_used", "message": "Your free tries are used up. Upgrade to PRO."}},
+                )
+
         await self.redis.delete(qtoken_key) # single-use
-        
+
         # --- Behavioral Anti-Cheat: Speed Detection ---
         served_time_key = get_question_served_time_key(str(session_id), current_index)
         served_time_ts = await self.redis.get(served_time_key)
