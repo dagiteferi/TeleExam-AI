@@ -20,6 +20,11 @@ class UserAccess:
     active_department_id: uuid.UUID | None = None
 
     @property
+    def has_pro(self) -> bool:
+        """PRO features: a paid PRO plan or admin-granted full access."""
+        return self.is_pro or self.is_full_access
+
+    @property
     def has_dual_access(self) -> bool:
         """Second department usable: dual fee approved on top of PRO, or admin full access."""
         if self.secondary_department_id is None:

@@ -18,6 +18,8 @@ class StartSessionRequest(BaseModel):
     past_exam_id: UUID | None = None
     exam_template_id: UUID | None = None
     question_count: int | None = Field(default=None, ge=5, le=10)  # quiz only
+    # Practice only (PRO): questions whose latest answer was wrong, instead of a course/topic
+    review_mistakes: bool = False
 
 
 class StartSessionResponse(BaseModel):

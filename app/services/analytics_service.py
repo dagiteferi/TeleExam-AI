@@ -40,6 +40,54 @@ class AnalyticsService:
         )
         await conn.execute(stmt)
 
+    @staticmethod
+    def _open_mistakes_query(user_id: UUID, department_id: UUID | None):
+        """
+        Questions whose most recent answer by this student was wrong.
+        Answering one correctly (e.g. in Review My Mistakes) removes it from the list.
+        """
+        from app.models.question import Question
+
+        latest = (
+            select(
+                UserAnswer.question_id,
+                UserAnswer.is_correct,
+                UserAnswer.answered_at,
+                func.row_number().over(
+                    partition_by=UserAnswer.question_id,
+                    order_by=UserAnswer.answered_at.desc(),
+                ).label("rn"),
+            )
+            .where(UserAnswer.user_id == user_id)
+            .subquery()
+        )
+        in_dept = (Course.department_id == department_id) if department_id else true()
+        return (
+            select(latest.c.question_id)
+            .join(Question, Question.id == latest.c.question_id)
+            .join(Course, Question.course_id == Course.id)
+            .where(
+                latest.c.rn == 1,
+                latest.c.is_correct.is_(False),
+                Question.is_active.is_(True),
+                in_dept,
+            )
+            .order_by(latest.c.answered_at.desc())
+        )
+
+    async def count_open_mistakes(
+        self, conn: AsyncConnection, user_id: UUID, department_id: UUID | None = None
+    ) -> int:
+        sub = self._open_mistakes_query(user_id, department_id).order_by(None).subquery()
+        return int(await conn.scalar(select(func.count()).select_from(sub)) or 0)
+
+    async def get_open_mistake_ids(
+        self, conn: AsyncConnection, user_id: UUID, department_id: UUID | None = None, limit: int = 20
+    ) -> list[UUID]:
+        """Most recent mistakes first, up to `limit`."""
+        rows = await conn.scalars(self._open_mistakes_query(user_id, department_id).limit(limit))
+        return list(rows.all())
+
     async def get_weak_topics(
         self,
         conn: AsyncConnection,

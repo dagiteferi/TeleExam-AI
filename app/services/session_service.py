@@ -45,6 +45,10 @@ from app.core.utils import armor_text
 logger = structlog.get_logger(__name__)
 
 
+# Max questions in one Review My Mistakes session (most recent mistakes first)
+REVIEW_MISTAKES_LIMIT = 20
+
+
 class SessionService:
     def __init__(self, redis_client: Redis):
         self.redis = redis_client
@@ -54,6 +58,8 @@ class SessionService:
     @staticmethod
     def _is_same_target(session_data: dict, request: StartSessionRequest) -> bool:
         """True if the existing session was started for the same exam/course/topic as this request."""
+        if request.review_mistakes or session_data.get("review_mistakes") == "1":
+            return request.review_mistakes and session_data.get("review_mistakes") == "1"
         if request.past_exam_id:
             return session_data.get("past_exam_id") == str(request.past_exam_id)
         if request.topic_id:
@@ -243,6 +249,31 @@ class SessionService:
                 rng = random.Random(seed)
                 rng.shuffle(question_ids)
 
+        elif request.mode == "practice" and request.review_mistakes:
+            # Review My Mistakes (PRO): the student's open mistakes in their current department
+            if access is None:
+                access = await AccessService.get_by_user_id(conn, user_id)
+            if not (access and access.has_pro):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={"error": {"code": "pro_required", "message": "Review My Mistakes is a PRO feature."}},
+                )
+            from app.services.analytics_service import AnalyticsService
+            question_ids = await AnalyticsService().get_open_mistake_ids(
+                conn, user_id, access.effective_department_id, limit=REVIEW_MISTAKES_LIMIT
+            )
+            if not question_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"error": {"code": "no_mistakes", "message": "You have no mistakes to review right now."}},
+                )
+            rng = random.Random(seed)
+            rng.shuffle(question_ids)
+            total_questions = len(question_ids)
+            title = "Review My Mistakes"
+            session_ttl_seconds = settings.DEFAULT_PRACTICE_TTL_SECONDS
+            deadline_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=total_questions * 90)).timestamp()
+
         elif request.mode == "practice":
             if access is None:
                 access = await AccessService.get_by_user_id(conn, user_id)
@@ -406,6 +437,7 @@ class SessionService:
             "seed": seed,
             "total_questions": total_questions,
             "title": title,
+            "review_mistakes": "1" if request.review_mistakes else None,
         }
 
         # Store session data in Redis Hash

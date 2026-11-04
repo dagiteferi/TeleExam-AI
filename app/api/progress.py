@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentTelegramId, ReadDbConn, RedisConn
-from app.schemas.progress import ProgressResponse, HistoryResponse
+from app.schemas.progress import ProgressResponse, HistoryResponse, MistakesSummary
 from app.services.progress_service import ProgressService
 
 router = APIRouter(prefix="/progress")
@@ -51,3 +51,12 @@ async def get_my_history(
         conn, telegram_id, mode=mode, page=page, page_size=page_size,
         date_from=date_from, date_to=date_to,
     )
+
+
+@router.get("/mistakes", response_model=MistakesSummary)
+async def get_my_mistakes_summary(
+    conn: ReadDbConn,
+    telegram_id: CurrentTelegramId,
+) -> MistakesSummary:
+    """How many questions the user has to review, and whether they can (PRO only)."""
+    return await ProgressService().get_mistakes_summary(conn, telegram_id)

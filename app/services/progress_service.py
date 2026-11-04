@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 
+from fastapi import HTTPException, status
 from sqlalchemy import select, func, String, true
 from sqlalchemy.ext.asyncio import AsyncConnection
 from redis.asyncio import Redis
@@ -17,7 +18,7 @@ from app.services.access_service import AccessService
 from app.services.analytics_service import AnalyticsService
 from app.schemas.progress import (
     ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo, RecentSession,
-    HistoryItem, HistoryResponse,
+    HistoryItem, HistoryResponse, MistakesSummary,
 )
 from app.db.redis import get_active_session_key, get_session_key
 
@@ -55,7 +56,12 @@ class ProgressService:
             return empty
 
         access = await AccessService.get_by_user_id(conn, user_id)
-        dept_id = access.effective_department_id if access else None
+        if not (access and access.has_pro):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "pro_required", "message": "Full results history is a PRO feature."}},
+            )
+        dept_id = access.effective_department_id
         in_dept = (Course.department_id == dept_id) if dept_id else true()
         department_name = await conn.scalar(select(Department.name).where(Department.id == dept_id)) if dept_id else None
 
@@ -308,5 +314,18 @@ class ProgressService:
             top_exam_scores=top_exam_scores,
             active_session_info=active_info,
             recent_sessions=recent_sessions,
+            has_pro=bool(access and access.has_pro),
+            mistakes_to_review=await AnalyticsService().count_open_mistakes(conn, user_id, dept_id),
+        )
+
+    async def get_mistakes_summary(self, conn: AsyncConnection, telegram_id: int) -> MistakesSummary:
+        user_id = await conn.scalar(select(User.id).where(User.telegram_id == telegram_id))
+        if not user_id:
+            return MistakesSummary(has_pro=False, count=0)
+        access = await AccessService.get_by_user_id(conn, user_id)
+        dept_id = access.effective_department_id if access else None
+        return MistakesSummary(
+            has_pro=bool(access and access.has_pro),
+            count=await AnalyticsService().count_open_mistakes(conn, user_id, dept_id),
         )
 

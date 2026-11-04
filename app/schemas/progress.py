@@ -85,4 +85,13 @@ class ProgressResponse(BaseModel):
     top_exam_scores: list[TopExamScore] = []
     active_session_info: ActiveSessionInfo | None = None
     recent_sessions: list[RecentSession] = []
+    # PRO features on the dashboard: full history, day filter, Review My Mistakes
+    has_pro: bool = False
+    mistakes_to_review: int = 0
+
+
+class MistakesSummary(BaseModel):
+    """What the Review My Mistakes button needs to know."""
+    has_pro: bool
+    count: int  # questions whose latest answer was wrong
 
