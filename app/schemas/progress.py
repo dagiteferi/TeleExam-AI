@@ -66,6 +66,9 @@ class HistoryResponse(BaseModel):
     total: int
     has_next: bool
     items: list[HistoryItem]
+    # Free preview: only the newest few results are returned; locked_count more need PRO
+    is_trial: bool = False
+    locked_count: int = 0
 
 
 class ProgressResponse(BaseModel):

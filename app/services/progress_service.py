@@ -27,6 +27,8 @@ from app.db.redis import get_active_session_key, get_session_key
 
 # Students are in Ethiopia (UTC+3, no daylight saving): history day filters use local days.
 LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=3))
+# Free users see this many newest results in each history view (All / Exams / Practice, any day filter)
+FREE_HISTORY_RESULTS = 3
 # Long questions are shortened in the mistakes list so a page fits in one Telegram message
 MISTAKE_PREVIEW_CHARS = 200
 
@@ -60,12 +62,12 @@ class ProgressService:
             return empty
 
         access = await AccessService.get_by_user_id(conn, user_id)
-        if not (access and access.has_pro):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={"error": {"code": "pro_required", "message": "Full results history is a PRO feature."}},
-            )
-        dept_id = access.effective_department_id
+        # Free users get a preview: every tab and day filter works, but only the newest
+        # few results of each view are returned; the rest is PRO.
+        is_trial = not (access and access.has_pro)
+        if is_trial:
+            page, page_size = 0, FREE_HISTORY_RESULTS
+        dept_id = access.effective_department_id if access else None
         in_dept = (Course.department_id == dept_id) if dept_id else true()
         department_name = await conn.scalar(select(Department.name).where(Department.id == dept_id)) if dept_id else None
 
@@ -127,8 +129,10 @@ class ProgressService:
             page=page,
             page_size=page_size,
             total=total,
-            has_next=(page + 1) * page_size < total,
+            has_next=False if is_trial else (page + 1) * page_size < total,
             items=items,
+            is_trial=is_trial,
+            locked_count=max(0, total - len(items)) if is_trial else 0,
         )
 
     async def get_progress(
