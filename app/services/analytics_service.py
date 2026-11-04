@@ -16,6 +16,7 @@ from app.models.user_topic_error import UserTopicError
 RECENT_ANSWERS_PER_TOPIC = 20
 MIN_ATTEMPTS = 3            # too few answers says nothing about a topic
 MIN_ERROR_RATE = 0.3        # below 30% wrong the topic is not flagged
+RECENT_ANSWERS_PER_COURSE = 30  # course fallback: a course covers several topics
 
 
 class AnalyticsService:
@@ -187,3 +188,72 @@ class AnalyticsService:
             }
             for row in rows.fetchall()
         ]
+
+    async def get_weak_courses(
+        self,
+        conn: AsyncConnection,
+        user_id: UUID,
+        department_id: UUID | None = None,
+        limit: int = 5,
+    ) -> list[dict]:
+        """
+        Same rules as get_weak_topics, but per course. Used when the student's answers
+        are spread too thinly for any single topic to reach MIN_ATTEMPTS (common early
+        on, because topics are small). Returns the same dict shape, with the course
+        name in "topic_name".
+        """
+        recent = (
+            select(
+                Topic.course_id,
+                UserAnswer.is_correct,
+                func.row_number().over(
+                    partition_by=Topic.course_id,
+                    order_by=UserAnswer.answered_at.desc(),
+                ).label("rn"),
+            )
+            .join(Topic, Topic.id == UserAnswer.topic_id)
+            .where(UserAnswer.user_id == user_id)
+            .subquery()
+        )
+
+        attempted = func.count()
+        wrong = func.count().filter(recent.c.is_correct.is_(False))
+        error_rate = wrong.cast(Float) / attempted.cast(Float)
+        in_dept = (Course.department_id == department_id) if department_id else true()
+
+        rows = await conn.execute(
+            select(
+                Course.name.label("course_name"),
+                attempted.label("attempted"),
+                wrong.label("wrong"),
+            )
+            .select_from(recent)
+            .join(Course, Course.id == recent.c.course_id)
+            .where(recent.c.rn <= RECENT_ANSWERS_PER_COURSE, in_dept)
+            .group_by(Course.id, Course.name)
+            .having(attempted >= MIN_ATTEMPTS, error_rate >= MIN_ERROR_RATE)
+            .order_by(error_rate.desc(), wrong.desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "topic_name": row.course_name,
+                "wrong": int(row.wrong),
+                "attempted": int(row.attempted),
+                "error_rate_percent": round(row.wrong / row.attempted * 100, 1),
+            }
+            for row in rows.fetchall()
+        ]
+
+    async def count_answers(
+        self, conn: AsyncConnection, user_id: UUID, department_id: UUID | None = None
+    ) -> int:
+        """How many questions the student has answered (in the department, if given)."""
+        in_dept = (Course.department_id == department_id) if department_id else true()
+        return int(await conn.scalar(
+            select(func.count())
+            .select_from(UserAnswer)
+            .join(Topic, Topic.id == UserAnswer.topic_id)
+            .join(Course, Course.id == Topic.course_id)
+            .where(UserAnswer.user_id == user_id, in_dept)
+        ) or 0)

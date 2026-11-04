@@ -28,6 +28,7 @@ _ai_graph = AiGraph()
 
 
 FREE_AI_DAILY_LIMIT = 5
+MIN_ANSWERS_FOR_PLAN = 10  # fewer answers than this cannot show reliable weak areas
 
 PRO_UPGRADE_LINE = (
     f"Upgrade to PRO for {settings.PRO_PRICE_BIRR} Birr to unlock all features: "
@@ -284,16 +285,29 @@ class AiService:
         overall = overall_row.fetchone()
 
         # 4. Current weak topics: worst error rate over each topic's recent answers
-        weak_topics_data = await AnalyticsService().get_weak_topics(conn, user.id, dept_id, limit=6)
+        analytics = AnalyticsService()
+        weak_topics_data = await analytics.get_weak_topics(conn, user.id, dept_id, limit=6)
+        # Topics are small, so early on no single topic has enough answers to judge.
+        # Fall back to whole courses rather than wrongly telling the student all is well.
+        by_course = False
+        if not weak_topics_data:
+            weak_topics_data = await analytics.get_weak_courses(conn, user.id, dept_id, limit=6)
+            by_course = bool(weak_topics_data)
 
         if not weak_topics_data:
-            return StudyPlanResponse(
-                success=False,
-                message=(
-                    "🎉 No weak topics right now — you are answering most topics correctly. "
-                    "Keep practicing; a plan will appear here if a topic starts slipping."
+            answered = await analytics.count_answers(conn, user.id, dept_id)
+            if answered < MIN_ANSWERS_FOR_PLAN:
+                message = (
+                    f"Not enough data yet. You have answered {answered} question"
+                    f"{'' if answered == 1 else 's'}; answer at least {MIN_ANSWERS_FOR_PLAN} "
+                    "in Practice or Exam Mode so your weak areas can be identified."
                 )
-            )
+            else:
+                message = (
+                    "No weak areas right now: you are answering most questions correctly. "
+                    "Keep practising; a plan will appear here if a topic or course starts slipping."
+                )
+            return StudyPlanResponse(success=False, message=message)
 
         avg_score = float(overall.avg_score or 0)
         exam_count = int(overall.exam_count or 0)
@@ -304,10 +318,13 @@ class AiService:
             f"{t['topic_name']}({t['wrong']}/{t['attempted']} wrong, {t['error_rate_percent']:.0f}%)"
             for t in weak_topics_data
         ])
+        area = "WeakCourses" if by_course else "WeakTopics"
         ai_context = (
             f"Exams:{exam_count}, AvgScore:{avg_score:.1f}%, WrongAnswers:{total_wrong}. "
-            f"WeakTopics(name, recent wrong/attempted, error rate): {topic_lines}."
+            f"{area}(name, recent wrong/attempted, error rate): {topic_lines}."
         )
+        if by_course:
+            ai_context += " (Too few answers per topic yet, so the weak areas are whole courses; use them as the topics.)"
 
         instructions = (
             "You are a study plan generator. Based on the student's exam performance data, "
