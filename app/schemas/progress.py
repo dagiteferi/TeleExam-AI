@@ -95,3 +95,27 @@ class MistakesSummary(BaseModel):
     has_pro: bool
     count: int  # questions whose latest answer was wrong
 
+
+class MistakeItem(BaseModel):
+    """One question the student got wrong: question text only (no choices, no correct answer)."""
+    question_id: str
+    prompt: str  # shortened if very long
+    your_answer: str  # the student's last (wrong) choice, used for the AI explanation
+    course_name: str | None = None
+    answered_at: datetime
+
+
+class MistakeCourseCount(BaseModel):
+    course_name: str
+    count: int
+
+
+class MistakeListResponse(BaseModel):
+    """A page of the student's wrong questions plus a per-course summary."""
+    total: int
+    page: int
+    page_size: int
+    has_next: bool
+    by_course: list[MistakeCourseCount] = []
+    items: list[MistakeItem] = []
+

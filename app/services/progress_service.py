@@ -18,13 +18,16 @@ from app.services.access_service import AccessService
 from app.services.analytics_service import AnalyticsService
 from app.schemas.progress import (
     ProgressResponse, CourseProgress, WeakTopic, TopExamScore, ActiveSessionInfo, RecentSession,
-    HistoryItem, HistoryResponse, MistakesSummary,
+    HistoryItem, HistoryResponse, MistakesSummary, MistakeItem, MistakeCourseCount, MistakeListResponse,
 )
+from app.core.utils import armor_text
 from app.db.redis import get_active_session_key, get_session_key
 
 
 # Students are in Ethiopia (UTC+3, no daylight saving): history day filters use local days.
 LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=3))
+# Long questions are shortened in the mistakes list so a page fits in one Telegram message
+MISTAKE_PREVIEW_CHARS = 200
 
 
 class ProgressService:
@@ -316,6 +319,53 @@ class ProgressService:
             recent_sessions=recent_sessions,
             has_pro=bool(access and access.has_pro),
             mistakes_to_review=await AnalyticsService().count_open_mistakes(conn, user_id, dept_id),
+        )
+
+    async def get_mistakes_list(
+        self, conn: AsyncConnection, telegram_id: int, page: int = 0, page_size: int = 5
+    ) -> MistakeListResponse:
+        """
+        The student's wrong questions (question text only, most recent first) and a
+        per-course summary. PRO only. Never includes choices or the correct answer.
+        """
+        user_id = await conn.scalar(select(User.id).where(User.telegram_id == telegram_id))
+        access = await AccessService.get_by_user_id(conn, user_id) if user_id else None
+        if not (access and access.has_pro):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "pro_required", "message": "Review My Mistakes is a PRO feature."}},
+            )
+        dept_id = access.effective_department_id
+        analytics = AnalyticsService()
+        by_course = await analytics.count_open_mistakes_by_course(conn, user_id, dept_id)
+        total = sum(n for _, n in by_course)
+        if total == 0:
+            return MistakeListResponse(total=0, page=0, page_size=page_size, has_next=False)
+
+        last_page = (total - 1) // page_size
+        page = min(max(page, 0), last_page)  # the list may have shrunk since the button was made
+        rows = await analytics.get_open_mistakes_page(conn, user_id, dept_id, page * page_size, page_size)
+
+        def preview(text: str | None) -> str:
+            text = (text or "").strip()
+            return text if len(text) <= MISTAKE_PREVIEW_CHARS else text[:MISTAKE_PREVIEW_CHARS].rstrip() + "…"
+
+        return MistakeListResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            has_next=page < last_page,
+            by_course=[MistakeCourseCount(course_name=name or "Other", count=n) for name, n in by_course],
+            items=[
+                MistakeItem(
+                    question_id=str(row.question_id),
+                    prompt=armor_text(preview(row.prompt), telegram_id),
+                    your_answer=row.selected_choice,
+                    course_name=row.course_name,
+                    answered_at=row.answered_at,
+                )
+                for row in rows
+            ],
         )
 
     async def get_mistakes_summary(self, conn: AsyncConnection, telegram_id: int) -> MistakesSummary:

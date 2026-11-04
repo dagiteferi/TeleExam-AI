@@ -41,10 +41,11 @@ class AnalyticsService:
         await conn.execute(stmt)
 
     @staticmethod
-    def _open_mistakes_query(user_id: UUID, department_id: UUID | None):
+    def _open_mistakes_query(user_id: UUID, department_id: UUID | None, question_id: UUID | None = None):
         """
         Questions whose most recent answer by this student was wrong.
         Answering one correctly (e.g. in Review My Mistakes) removes it from the list.
+        question_id limits it to that one question (is it still an open mistake?).
         """
         from app.models.question import Question
 
@@ -52,13 +53,17 @@ class AnalyticsService:
             select(
                 UserAnswer.question_id,
                 UserAnswer.is_correct,
+                UserAnswer.selected_choice,
                 UserAnswer.answered_at,
                 func.row_number().over(
                     partition_by=UserAnswer.question_id,
                     order_by=UserAnswer.answered_at.desc(),
                 ).label("rn"),
             )
-            .where(UserAnswer.user_id == user_id)
+            .where(
+                UserAnswer.user_id == user_id,
+                (UserAnswer.question_id == question_id) if question_id else true(),
+            )
             .subquery()
         )
         in_dept = (Course.department_id == department_id) if department_id else true()
@@ -72,21 +77,59 @@ class AnalyticsService:
                 Question.is_active.is_(True),
                 in_dept,
             )
-            .order_by(latest.c.answered_at.desc())
-        )
+            .order_by(latest.c.answered_at.desc(), latest.c.question_id)
+        ), latest
 
     async def count_open_mistakes(
         self, conn: AsyncConnection, user_id: UUID, department_id: UUID | None = None
     ) -> int:
-        sub = self._open_mistakes_query(user_id, department_id).order_by(None).subquery()
+        query, _ = self._open_mistakes_query(user_id, department_id)
+        sub = query.order_by(None).subquery()
         return int(await conn.scalar(select(func.count()).select_from(sub)) or 0)
 
     async def get_open_mistake_ids(
-        self, conn: AsyncConnection, user_id: UUID, department_id: UUID | None = None, limit: int = 20
+        self,
+        conn: AsyncConnection,
+        user_id: UUID,
+        department_id: UUID | None = None,
+        limit: int = 20,
+        question_id: UUID | None = None,
     ) -> list[UUID]:
-        """Most recent mistakes first, up to `limit`."""
-        rows = await conn.scalars(self._open_mistakes_query(user_id, department_id).limit(limit))
+        """Most recent mistakes first, up to `limit` (or just `question_id` if it is still open)."""
+        query, _ = self._open_mistakes_query(user_id, department_id, question_id)
+        rows = await conn.scalars(query.limit(limit))
         return list(rows.all())
+
+    async def get_open_mistakes_page(
+        self, conn: AsyncConnection, user_id: UUID, department_id: UUID | None, offset: int, limit: int
+    ) -> list:
+        """
+        A page of open mistakes (most recent first): question text, the student's
+        wrong answer and the course name. The correct answer is not selected.
+        """
+        from app.models.question import Question
+
+        query, latest = self._open_mistakes_query(user_id, department_id)
+        query = query.add_columns(
+            latest.c.selected_choice,
+            latest.c.answered_at,
+            Question.prompt,
+            Course.name.label("course_name"),
+        )
+        return list((await conn.execute(query.offset(offset).limit(limit))).fetchall())
+
+    async def count_open_mistakes_by_course(
+        self, conn: AsyncConnection, user_id: UUID, department_id: UUID | None
+    ) -> list[tuple[str, int]]:
+        """[(course name, open mistakes)], most mistakes first — the summary at the top of the list."""
+        query, _ = self._open_mistakes_query(user_id, department_id)
+        sub = query.order_by(None).add_columns(Course.name.label("course_name")).subquery()
+        rows = await conn.execute(
+            select(sub.c.course_name, func.count().label("n"))
+            .group_by(sub.c.course_name)
+            .order_by(func.count().desc(), sub.c.course_name)
+        )
+        return [(row.course_name, int(row.n)) for row in rows.fetchall()]
 
     async def get_weak_topics(
         self,

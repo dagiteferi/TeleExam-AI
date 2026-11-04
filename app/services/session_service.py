@@ -59,7 +59,11 @@ class SessionService:
     def _is_same_target(session_data: dict, request: StartSessionRequest) -> bool:
         """True if the existing session was started for the same exam/course/topic as this request."""
         if request.review_mistakes or session_data.get("review_mistakes") == "1":
-            return request.review_mistakes and session_data.get("review_mistakes") == "1"
+            return (
+                request.review_mistakes
+                and session_data.get("review_mistakes") == "1"
+                and session_data.get("review_question_id", "") == str(request.review_question_id or "")
+            )
         if request.past_exam_id:
             return session_data.get("past_exam_id") == str(request.past_exam_id)
         if request.topic_id:
@@ -259,8 +263,11 @@ class SessionService:
                     detail={"error": {"code": "pro_required", "message": "Review My Mistakes is a PRO feature."}},
                 )
             from app.services.analytics_service import AnalyticsService
+            # One question ("Try again") must still be an open mistake of this student
             question_ids = await AnalyticsService().get_open_mistake_ids(
-                conn, user_id, access.effective_department_id, limit=REVIEW_MISTAKES_LIMIT
+                conn, user_id, access.effective_department_id,
+                limit=1 if request.review_question_id else REVIEW_MISTAKES_LIMIT,
+                question_id=request.review_question_id,
             )
             if not question_ids:
                 raise HTTPException(
@@ -438,6 +445,7 @@ class SessionService:
             "total_questions": total_questions,
             "title": title,
             "review_mistakes": "1" if request.review_mistakes else None,
+            "review_question_id": str(request.review_question_id) if request.review_question_id else None,
         }
 
         # Store session data in Redis Hash

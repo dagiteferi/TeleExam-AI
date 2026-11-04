@@ -20,6 +20,8 @@ class StartSessionRequest(BaseModel):
     question_count: int | None = Field(default=None, ge=5, le=10)  # quiz only
     # Practice only (PRO): questions whose latest answer was wrong, instead of a course/topic
     review_mistakes: bool = False
+    # With review_mistakes: retry just this one wrong question ("Try again" in the mistakes viewer)
+    review_question_id: UUID | None = None
 
 
 class StartSessionResponse(BaseModel):

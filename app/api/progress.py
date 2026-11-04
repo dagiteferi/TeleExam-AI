@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentTelegramId, ReadDbConn, RedisConn
-from app.schemas.progress import ProgressResponse, HistoryResponse, MistakesSummary
+from app.schemas.progress import ProgressResponse, HistoryResponse, MistakesSummary, MistakeListResponse
 from app.services.progress_service import ProgressService
 
 router = APIRouter(prefix="/progress")
@@ -60,3 +60,17 @@ async def get_my_mistakes_summary(
 ) -> MistakesSummary:
     """How many questions the user has to review, and whether they can (PRO only)."""
     return await ProgressService().get_mistakes_summary(conn, telegram_id)
+
+
+@router.get("/mistakes/list", response_model=MistakeListResponse)
+async def get_my_mistakes_list(
+    conn: ReadDbConn,
+    telegram_id: CurrentTelegramId,
+    page: int = Query(0, ge=0),
+    page_size: int = Query(5, ge=1, le=20),
+) -> MistakeListResponse:
+    """
+    The questions the user got wrong (question text only, most recent first) with a
+    per-course summary. PRO only. Never includes the choices or the correct answer.
+    """
+    return await ProgressService().get_mistakes_list(conn, telegram_id, page, page_size)
