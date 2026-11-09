@@ -18,7 +18,7 @@ from app.models.payment_request import PaymentRequest
 from app.models.user import User
 from app.schemas.payment import BankAccountCreate, BankAccountUpdate, BankAccountResponse, PaymentRequestResponse
 from app.core.notify import send_telegram_message
-from app.core.utils import display_name
+from app.core.utils import html_name
 
 router = APIRouter(prefix="/payments")
 
@@ -207,7 +207,7 @@ async def approve_payment_request(
     await conn.commit()
 
     # 5. Notify user
-    name = display_name(user)
+    name = html_name(user)
 
     if kind == "dual_department":
         dept_name = await conn.scalar(select(Department.name).where(Department.id == target_department_id))
@@ -260,7 +260,7 @@ async def reject_payment_request(
     # Notify user
     user_result = await conn.execute(select(User).where(User.id == pr["user_id"]))
     user = user_result.mappings().one()
-    name = display_name(user)
+    name = html_name(user)
     reason_msg = f"Reason: <i>{html.escape(reason)}</i>\n\n" if reason else ""
 
     title = "Dual Degree Payment Rejected" if pr.get("kind") == "dual_department" else "Payment Rejected"

@@ -43,7 +43,7 @@ from app.schemas.admin import (
     DepartmentListItem,
 )
 from app.core.notify import send_telegram_message
-from app.core.utils import display_name
+from app.core.utils import html_name
 from redis.asyncio import Redis
 
 router = APIRouter(prefix="/users")
@@ -490,7 +490,7 @@ async def toggle_user_pro(
     await conn.commit()
 
     # Send Telegram notification
-    name = display_name(user)
+    name = html_name(user)
     if new_pro_status:
         await send_telegram_message(
             user["telegram_id"],
@@ -565,7 +565,7 @@ async def grant_dual_degree(
 
     await send_telegram_message(
         user["telegram_id"],
-        f"🎓 <b>Dual Degree Activated, {display_name(user)}!</b>\n\n"
+        f"🎓 <b>Dual Degree Activated, {html_name(user)}!</b>\n\n"
         f"An administrator has unlocked your second department: <b>{html.escape(dept_name.title())}</b>.\n"
         "Exams, practice, progress and AI study plans are now available for it.\n\n"
         "Tap <b>🔄 Switch Department</b> in the menu to move between your departments.",
@@ -609,7 +609,7 @@ async def revoke_dual_degree(
 
     await send_telegram_message(
         user["telegram_id"],
-        f"🎓 <b>Dual Degree Removed, {display_name(user)}</b>\n\n"
+        f"🎓 <b>Dual Degree Removed, {html_name(user)}</b>\n\n"
         "An administrator has removed your second department. "
         "You are back in your main department.\n\n"
         "Contact support if you believe this was a mistake.",
@@ -669,7 +669,7 @@ async def reset_user_access(
     if active_keys:
         await redis.delete(*active_keys)
 
-    name = display_name(user)
+    name = html_name(user)
     await send_telegram_message(
         user["telegram_id"],
         f"⚠️ <b>Account Reset, {name}</b>\n\n"
@@ -804,7 +804,7 @@ async def ban_user(
     await redis.set(flag_key, "blocked", ex=ttl)
     await redis.delete(get_ban_cache_key(user["telegram_id"]))
 
-    name = display_name(user)
+    name = html_name(user)
     duration_msg = f" for {duration_hours} hour(s)" if duration_hours else ""
     await send_telegram_message(
         user["telegram_id"],
@@ -836,7 +836,7 @@ async def unban_user(
     flag_key = get_flag_key(user["telegram_id"])
     await redis.delete(flag_key, get_ban_cache_key(user["telegram_id"]))
 
-    name = display_name(user)
+    name = html_name(user)
     await send_telegram_message(
         user["telegram_id"],
         f"✅ <b>Account Restored, {name}!</b>\n\n"

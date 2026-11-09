@@ -1,4 +1,5 @@
 import hashlib
+import html
 import re
 
 def armor_text(text: str | None, user_id: str | int | None = None) -> str:
@@ -50,3 +51,8 @@ def display_name(user, fallback: str = "there") -> str:
     get = user.get if hasattr(user, "get") else lambda k: getattr(user, k, None)
     full = " ".join(p.strip() for p in (get("first_name"), get("last_name")) if p and p.strip())
     return full or get("telegram_username") or fallback
+
+
+def html_name(user, fallback: str = "there") -> str:
+    """display_name made safe for Telegram HTML messages: a name with <, > or & would make Telegram reject the message."""
+    return html.escape(display_name(user, fallback), quote=False)
