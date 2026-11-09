@@ -667,7 +667,11 @@ class SessionService:
         # Checked before the qtoken is spent, so a blocked user keeps the question token.
         if session_data.get("review_trial") == "1":
             from app.services import mistakes_trial
-            if not await mistakes_trial.consume_try(self.redis, telegram_id):
+            # The user may have become PRO after this session started: no trial limit then.
+            access = await AccessService.get_by_telegram_id(conn, telegram_id)
+            if access and access.has_pro:
+                await self.redis.hdel(session_key, "review_trial")  # stop checking for this session
+            elif not await mistakes_trial.consume_try(self.redis, telegram_id):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail={"error": {"code": "trial_used", "message": "Your free tries are used up. Upgrade to PRO."}},
