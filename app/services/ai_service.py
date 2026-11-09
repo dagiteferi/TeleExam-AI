@@ -21,7 +21,7 @@ from app.schemas.ai import (
 from app.core.config import settings
 from app.core.utils import armor_text
 from redis.asyncio import Redis
-from app.db.redis import get_ai_usage_key
+from app.db.redis import get_ai_usage_key, get_active_session_key, get_session_key
 
 # Singleton: built once at startup, shared by all concurrent requests with active model
 _ai_graph = AiGraph()
@@ -61,6 +61,24 @@ async def _consume_free_ai_use(redis: Redis, usage_key: str, daily_limit: int = 
     return True
 
 
+EXAM_LOCKED_MESSAGE = "🔒 AI Tutor is not available during an exam. Finish the exam first, then ask the AI."
+
+
+async def _in_running_exam(redis: Redis, user_id: UUID, question_id: UUID | str) -> bool:
+    """True when the question is part of the user's exam that is still in progress (AI must not give answers)."""
+    session_id = await redis.get(get_active_session_key(user_id, "exam"))
+    if not session_id:
+        return False
+    status, question_ids = await redis.hmget(get_session_key(session_id), "status", "question_ids")
+    if status != "in_progress" or not question_ids:
+        return False
+    try:
+        qid = str(UUID(str(question_id)))
+    except ValueError:
+        return False
+    return qid in json.loads(question_ids)
+
+
 async def _release_db(conn: AsyncConnection) -> None:
     """
     Returns the request's DB connection to the pool before the slow LLM call.
@@ -91,11 +109,15 @@ class AiService:
         source: str | None = None,
     ) -> ExplainResponse:
         # --- Referral & Usage Check ---
-        user_row = await conn.execute(select(User.invite_count, _HAS_PRO).where(User.telegram_id == telegram_id))
+        user_row = await conn.execute(select(User.id, User.invite_count, _HAS_PRO).where(User.telegram_id == telegram_id))
         user = user_row.fetchone()
 
         if not user:
              return ExplainResponse(success=False, explanation="User profile not found.")
+
+        # Anti-cheat: never explain a question of the exam the user is taking right now
+        if await _in_running_exam(redis, user.id, question_id):
+            return ExplainResponse(success=False, explanation=EXAM_LOCKED_MESSAGE)
 
         usage_key = None
         mistakes_trial_used = False
@@ -168,11 +190,15 @@ class AiService:
         question_id: str | None,
     ) -> ChatResponse:
         # --- Referral & Usage Check ---
-        user_row = await conn.execute(select(User.invite_count, _HAS_PRO).where(User.telegram_id == telegram_id))
+        user_row = await conn.execute(select(User.id, User.invite_count, _HAS_PRO).where(User.telegram_id == telegram_id))
         user = user_row.fetchone()
-        
+
         if not user:
              return ChatResponse(success=False, ai_response="User profile not found.")
+
+        # Anti-cheat: no follow-up questions about the exam the user is taking right now
+        if question_id and question_id != GENERAL_CHAT_QUESTION_ID and await _in_running_exam(redis, user.id, question_id):
+            return ChatResponse(success=False, ai_response=EXAM_LOCKED_MESSAGE)
 
         # Follow-up questions have their own daily allowance, separate from
         # explanations, so the explanation doesn't use up a follow-up.
