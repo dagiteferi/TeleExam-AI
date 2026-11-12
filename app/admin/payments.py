@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import html
+
+import structlog
 
 from typing import Annotated
 from uuid import UUID
@@ -19,6 +22,9 @@ from app.models.user import User
 from app.schemas.payment import BankAccountCreate, BankAccountUpdate, BankAccountResponse, PaymentRequestResponse
 from app.core.notify import send_telegram_message
 from app.core.utils import html_name
+from app.db.supabase import get_supabase
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/payments")
 
@@ -116,6 +122,49 @@ async def get_payment_requests(
     result = await conn.execute(query)
     requests = result.mappings().all()
     return await _with_labels(conn, requests)
+
+
+RECEIPTS_BUCKET = "payment-receipts"
+
+
+def _receipt_storage_path(screenshot_url: str | None) -> str | None:
+    """Turns the stored public URL back into the file's path inside the receipts bucket."""
+    marker = f"/{RECEIPTS_BUCKET}/"
+    if not screenshot_url or marker not in screenshot_url:
+        return None
+    return screenshot_url.split(marker, 1)[1].split("?", 1)[0] or None
+
+
+@router.delete("/requests/{request_id}", dependencies=[Depends(require_superadmin)])
+async def delete_payment_request(
+    request_id: UUID,
+    conn: AsyncConnection = Depends(get_admin_db),
+):
+    """
+    Permanently deletes a payment request and its receipt image (e.g. test uploads).
+    It does not change the user: an approved payment's PRO / Dual access stays.
+    """
+    from sqlalchemy import delete
+
+    result = await conn.execute(
+        delete(PaymentRequest).where(PaymentRequest.id == request_id).returning(PaymentRequest.screenshot_url)
+    )
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Payment request not found")
+    await conn.commit()
+
+    # Remove the image too. The request is already gone, so a storage error only leaves an orphan file.
+    image_deleted = False
+    path = _receipt_storage_path(row.screenshot_url)
+    if path:
+        try:
+            await asyncio.to_thread(get_supabase().storage.from_(RECEIPTS_BUCKET).remove, [path])
+            image_deleted = True
+        except Exception as e:
+            logger.warning("Failed to delete payment receipt image", path=path, error=str(e))
+
+    return {"message": "Payment request deleted", "image_deleted": image_deleted}
 
 
 def _amount_birr(kind: str | None) -> int:
