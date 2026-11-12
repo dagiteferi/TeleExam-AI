@@ -14,7 +14,10 @@ from app.models.user import User
 from app.models.exam_result import ExamResult
 from app.models.question import Question
 from app.models.user_answer import UserAnswer
-from app.schemas.admin import DAUResponse, ReferralStatsResponse, ExamStatsResponse, QuestionStatsResponse, DashboardSummaryResponse
+from app.schemas.admin import (
+    DAUResponse, ReferralStatsResponse, ExamStatsResponse, QuestionStatsResponse,
+    DashboardSummaryResponse, DepartmentUserCount,
+)
 
 async def get_admin_db():
     async with db_conn(telegram_id=None) as conn:
@@ -153,7 +156,33 @@ async def get_dashboard_summary(
 ) -> DashboardSummaryResponse:
     # 1. Basic counts
     total_users = await conn.scalar(select(func.count(User.id))) or 0
-    total_exams = await conn.scalar(select(func.count(ExamResult.id))) or 0  # every submitted session, all modes
+    sessions_by_mode = dict(
+        (await conn.execute(select(ExamResult.mode, func.count(ExamResult.id)).group_by(ExamResult.mode))).all()
+    )
+    total_exams = sum(sessions_by_mode.values())  # every submitted session, all modes
+
+    # Users per main department, including departments nobody picked yet
+    has_pro = (User.is_pro.is_(True)) | (User.is_full_access.is_(True))
+    dept_rows = await conn.execute(
+        select(
+            Department.id,
+            Department.name,
+            func.count(User.id).label("users"),
+            func.count(User.id).filter(has_pro).label("pro_users"),
+        )
+        .select_from(Department)
+        .outerjoin(User, User.department_id == Department.id)
+        .group_by(Department.id, Department.name)
+        .order_by(func.count(User.id).desc(), Department.name)
+    )
+    users_by_department = [
+        DepartmentUserCount(department_id=r.id, name=r.name, users=r.users, pro_users=r.pro_users)
+        for r in dept_rows
+    ]
+    users_without_department = await conn.scalar(
+        select(func.count(User.id)).where(User.department_id.is_(None))
+    ) or 0
+
     total_departments = await conn.scalar(select(func.count(Department.id))) or 0
     banned_users = await conn.scalar(select(func.count(User.id)).where(User.is_banned == True)) or 0
 
@@ -173,8 +202,12 @@ async def get_dashboard_summary(
         total_users=total_users,
         user_growth_percent=growth,
         total_exams=total_exams,
+        exam_sessions=sessions_by_mode.get("exam", 0),
+        practice_sessions=sessions_by_mode.get("practice", 0),
         total_departments=total_departments,
         today_dau=today_dau,
         banned_users=banned_users,
-        chart_data=chart_data
+        chart_data=chart_data,
+        users_by_department=users_by_department,
+        users_without_department=users_without_department,
     )

@@ -191,14 +191,25 @@ class GrantFullAccessResponse(BaseModel):
     is_full_access: bool
     message: str
 
+class DepartmentUserCount(BaseModel):
+    department_id: UUID
+    name: str
+    users: int  # users whose main department is this one
+    pro_users: int  # of those, PRO or admin full access
+
+
 class DashboardSummaryResponse(BaseModel):
     total_users: int
     user_growth_percent: float
-    total_exams: int
+    total_exams: int  # all submitted sessions: exam_sessions + practice_sessions
+    exam_sessions: int = 0
+    practice_sessions: int = 0
     total_departments: int
     today_dau: int
     banned_users: int
     chart_data: list[DailyActiveUser]
+    users_by_department: list[DepartmentUserCount] = []
+    users_without_department: int = 0
 
 
 # ─── Exam Management Schemas ──────────────────────────────────────────────────
