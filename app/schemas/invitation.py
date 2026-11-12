@@ -40,21 +40,44 @@ class InvitationRuleConfig(BaseModel):
         ge=1,
         description="Number of extra courses unlocked by each invite.",
     )
+    max_invite_courses_ratio: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Highest share of courses invites can unlock (0.6 = 60%); the rest require PRO.",
+    )
 
-    # ── Extra Referral Rewards ──
+    # ── PRO-only Locks ──
+    lock_newest_year: bool = Field(
+        default=True,
+        description="When true, the newest exam year can never be unlocked by invites (PRO only).",
+    )
+    lock_last_course: bool = Field(
+        default=True,
+        description="When true, the last course can never be unlocked by invites (PRO only).",
+    )
+
+    # ── AI Rewards ──
+    free_ai_daily_limit: int = Field(
+        default=5,
+        ge=0,
+        description="Free AI explanations per day for non-PRO users, before invite bonuses.",
+    )
     ai_bonus_per_invite: int = Field(
         default=0,
         ge=0,
         description="Extra daily free AI explanations granted per invite.",
     )
 
-    # Invites never unlock everything: at most max_invite_years extra years, never the
-    # newest year, and never the last course. Full access requires payment.
+    # Invites unlock at most max_invite_years extra years and max_invite_courses_ratio of
+    # courses; lock_newest_year / lock_last_course keep the newest year / last course PRO-only.
+    # Free years and free courses always stay free, even above these caps.
 
     def _year_invite_cap(self, total_years: int) -> int:
         """Max years a non-PRO user can ever reach (free years stay free even if they cover all years)."""
         free = min(self.free_years, total_years)
-        return max(free, min(total_years - 1, free + self.max_invite_years))
+        ceiling = total_years - 1 if self.lock_newest_year else total_years
+        return max(free, min(ceiling, free + self.max_invite_years))
 
     def calculate_unlocked_years_count(self, invite_count: int, total_years: int) -> int:
         """Calculates total count of exam years allowed for this invite count."""
@@ -109,7 +132,9 @@ class InvitationRuleConfig(BaseModel):
         return min(total_courses, max(1, int(total_courses * self.free_courses_ratio)))
 
     def _course_invite_cap(self, total_courses: int) -> int:
-        return max(self._free_courses_count(total_courses), total_courses - 1)
+        ceiling = total_courses - 1 if self.lock_last_course else total_courses
+        ratio_cap = int(total_courses * self.max_invite_courses_ratio)
+        return max(self._free_courses_count(total_courses), min(ceiling, ratio_cap))
 
     def calculate_unlocked_courses_count(
         self,
@@ -134,9 +159,9 @@ class InvitationRuleConfig(BaseModel):
             return None
         return math.ceil((course_index + 1 - base) / self.courses_per_invite)
 
-    def calculate_ai_daily_limit(self, invite_count: int, base_limit: int = 5) -> int:
+    def calculate_ai_daily_limit(self, invite_count: int) -> int:
         """Calculates daily free AI quota including bonus for invites."""
-        return base_limit + max(0, invite_count * self.ai_bonus_per_invite)
+        return self.free_ai_daily_limit + max(0, invite_count * self.ai_bonus_per_invite)
 
     def get_summary(self) -> str:
         """Generates human-readable summary of the active rules."""
@@ -155,11 +180,17 @@ class InvitationRuleConfig(BaseModel):
         )
         course_rule = (
             f"{round(self.free_courses_ratio * 100)}% of courses free, "
-            f"+{self.courses_per_invite} course(s) per invite"
+            f"+{self.courses_per_invite} course(s) per invite "
+            f"(up to {round(self.max_invite_courses_ratio * 100)}% of courses by invites)"
         )
-        all_rule = "newest year and full access require PRO"
+        pro_only = []
+        if self.lock_newest_year:
+            pro_only.append("newest year")
+        if self.lock_last_course:
+            pro_only.append("last course")
+        all_rule = f"{' and '.join(pro_only)} always require PRO" if pro_only else "invites can unlock everything"
 
-        perks = []
+        perks = [f"{self.free_ai_daily_limit} free AI explanations/day"]
         if self.ai_bonus_per_invite > 0:
             perks.append(f"+{self.ai_bonus_per_invite} daily AI explanations/invite")
 
@@ -174,6 +205,10 @@ class InvitationRuleUpdate(BaseModel):
     max_invite_years: int | None = Field(default=None, ge=0)
     free_courses_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
     courses_per_invite: int | None = Field(default=None, ge=1)
+    max_invite_courses_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
+    lock_newest_year: bool | None = None
+    lock_last_course: bool | None = None
+    free_ai_daily_limit: int | None = Field(default=None, ge=0)
     ai_bonus_per_invite: int | None = Field(default=None, ge=0)
 
 

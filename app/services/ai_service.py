@@ -27,7 +27,6 @@ from app.db.redis import get_ai_usage_key, get_active_session_key, get_session_k
 _ai_graph = AiGraph()
 
 
-FREE_AI_DAILY_LIMIT = 5
 MIN_ANSWERS_FOR_PLAN = 10  # fewer answers than this cannot show reliable weak areas
 
 PRO_UPGRADE_LINE = (
@@ -50,7 +49,7 @@ def _focus_for_rate(error_rate_percent: float) -> str:
 GENERAL_CHAT_QUESTION_ID = "00000000-0000-0000-0000-000000000000"
 
 
-async def _consume_free_ai_use(redis: Redis, usage_key: str, daily_limit: int = FREE_AI_DAILY_LIMIT) -> bool:
+async def _consume_free_ai_use(redis: Redis, usage_key: str, daily_limit: int) -> bool:
     """Atomically uses one free AI request; False once the daily limit is reached."""
     used = await redis.incr(usage_key)
     if used == 1:
@@ -131,7 +130,7 @@ class AiService:
             mistakes_trial_used = True
         elif not user.is_pro:
             invite_config = await InvitationService.get_config(conn)
-            daily_limit = invite_config.calculate_ai_daily_limit(user.invite_count or 0, base_limit=FREE_AI_DAILY_LIMIT)
+            daily_limit = invite_config.calculate_ai_daily_limit(user.invite_count or 0)
             usage_key = get_ai_usage_key(telegram_id)
             if not await _consume_free_ai_use(redis, usage_key, daily_limit=daily_limit):
                 return ExplainResponse(success=False, explanation=f"⚠️ You've used your {daily_limit} free AI explanations for today!\n\n{PRO_UPGRADE_LINE}")
@@ -205,7 +204,7 @@ class AiService:
         usage_key = None
         if not user.is_pro:
             invite_config = await InvitationService.get_config(conn)
-            daily_limit = invite_config.calculate_ai_daily_limit(user.invite_count or 0, base_limit=FREE_AI_DAILY_LIMIT)
+            daily_limit = invite_config.calculate_ai_daily_limit(user.invite_count or 0)
             usage_key = f"{get_ai_usage_key(telegram_id)}:chat"
             if not await _consume_free_ai_use(redis, usage_key, daily_limit=daily_limit):
                 return ChatResponse(success=False, ai_response=f"⚠️ You've used your {daily_limit} free AI follow-up questions for today!\n\n{PRO_UPGRADE_LINE}")
