@@ -35,8 +35,7 @@ class Settings(BaseSettings):
     sqlalchemy_database_url: str
     cors_allow_origins: list[str] = ["*"]
 
-    rate_li
-    frt_requests: int = 60
+    rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
 
     REDIS_HOST: str = "localhost"
