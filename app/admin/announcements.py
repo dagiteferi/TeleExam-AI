@@ -20,6 +20,8 @@ from app.schemas.announcement import (
     AnnouncementCreate,
     AnnouncementPreview,
     AnnouncementResponse,
+    AnnouncementUpdate,
+    DeleteResult,
     DeliveryRow,
 )
 from app.services.announcement_service import audience_filter
@@ -40,6 +42,19 @@ async def _check_target(conn: AsyncConnection, target: AnnouncementAudience) -> 
             raise HTTPException(status_code=404, detail="Some selected users no longer exist. Refresh and try again.")
         return next(iter(selected)) if len(selected) == 1 else None
     return None
+
+
+async def _require_live(conn: AsyncConnection, announcement_id: UUID) -> None:
+    """404 unless the announcement exists, belongs to this backend's bot and isn't deleted."""
+    exists = await conn.scalar(
+        select(Announcement.id).where(
+            Announcement.id == announcement_id,
+            Announcement.bot_id.is_not_distinct_from(settings.telegram_bot_id),
+            Announcement.deleted_at.is_(None),
+        )
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail="Announcement not found")
 
 
 @router.post("/preview", response_model=AnnouncementPreview)
@@ -128,14 +143,7 @@ async def list_deliveries(
     conn: AsyncConnection = Depends(get_admin_db),
 ) -> list[DeliveryRow]:
     """Every recipient and what happened: waiting and failed first, so problems are easy to spot."""
-    exists = await conn.scalar(
-        select(Announcement.id).where(
-            Announcement.id == announcement_id,
-            Announcement.bot_id.is_not_distinct_from(settings.telegram_bot_id),
-        )
-    )
-    if not exists:
-        raise HTTPException(status_code=404, detail="Announcement not found")
+    await _require_live(conn, announcement_id)
 
     order = case(
         (AnnouncementDelivery.status == "pending", 0),
@@ -186,14 +194,7 @@ async def cancel_announcement(
     conn: AsyncConnection = Depends(get_admin_db),
 ) -> AnnouncementResponse:
     """Stops delivery to users who have not received it yet. Already-sent messages stay."""
-    exists = await conn.scalar(
-        select(Announcement.id).where(
-            Announcement.id == announcement_id,
-            Announcement.bot_id.is_not_distinct_from(settings.telegram_bot_id),
-        )
-    )
-    if not exists:
-        raise HTTPException(status_code=404, detail="Announcement not found")
+    await _require_live(conn, announcement_id)
     await conn.execute(
         update(AnnouncementDelivery)
         .where(AnnouncementDelivery.announcement_id == announcement_id, AnnouncementDelivery.status == "pending")
@@ -203,11 +204,66 @@ async def cancel_announcement(
     return (await _list(conn, announcement_id=announcement_id))[0]
 
 
+@router.put("/{announcement_id}", response_model=AnnouncementResponse)
+async def edit_announcement(
+    announcement_id: UUID,
+    body: AnnouncementUpdate,
+    background_tasks: BackgroundTasks,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> AnnouncementResponse:
+    """
+    Changes the text. Users still waiting get the new text; the bot edits the copies
+    already delivered (Telegram shows them as "edited").
+    """
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="The message is empty.")
+    await _require_live(conn, announcement_id)
+    await conn.execute(
+        update(Announcement)
+        .where(Announcement.id == announcement_id, Announcement.text != text)
+        .values(text=text, version=Announcement.version + 1)
+    )
+    await conn.commit()
+    background_tasks.add_task(wake_announcement_sender)
+    return (await _list(conn, announcement_id=announcement_id))[0]
+
+
+@router.delete("/{announcement_id}", response_model=DeleteResult)
+async def delete_announcement(
+    announcement_id: UUID,
+    background_tasks: BackgroundTasks,
+    conn: AsyncConnection = Depends(get_admin_db),
+) -> DeleteResult:
+    """
+    Stops sending it, removes it from the history, and has the bot delete the copies
+    already in users' chats.
+    """
+    await _require_live(conn, announcement_id)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    await conn.execute(update(Announcement).where(Announcement.id == announcement_id).values(deleted_at=now))
+    await conn.execute(
+        update(AnnouncementDelivery)
+        .where(AnnouncementDelivery.announcement_id == announcement_id, AnnouncementDelivery.status == "pending")
+        .values(status="cancelled")
+    )
+    sent = (AnnouncementDelivery.announcement_id == announcement_id) & (AnnouncementDelivery.status == "sent")
+    removing = await conn.scalar(
+        select(func.count(AnnouncementDelivery.id)).where(sent, AnnouncementDelivery.message_id.isnot(None))
+    )
+    untracked = await conn.scalar(
+        select(func.count(AnnouncementDelivery.id)).where(sent, AnnouncementDelivery.message_id.is_(None))
+    )
+    await conn.commit()
+    background_tasks.add_task(wake_announcement_sender)
+    return DeleteResult(removing_count=removing or 0, untracked_count=untracked or 0)
+
+
 async def _list(
     conn: AsyncConnection, *, announcement_id: UUID | None = None, limit: int = 50
 ) -> list[AnnouncementResponse]:
-    def count_of(status: str):
-        return func.count(AnnouncementDelivery.id).filter(AnnouncementDelivery.status == status)
+    def count_of(status: str, *extra):
+        return func.count(AnnouncementDelivery.id).filter(AnnouncementDelivery.status == status, *extra)
 
     counts = (
         select(
@@ -216,7 +272,14 @@ async def _list(
             count_of("pending").label("pending_count"),
             count_of("failed").label("failed_count"),
             count_of("cancelled").label("cancelled_count"),
+            count_of(
+                "sent",
+                AnnouncementDelivery.message_id.isnot(None),
+                AnnouncementDelivery.text_version < Announcement.version,
+            ).label("updating_count"),
+            count_of("sent", AnnouncementDelivery.message_id.is_(None)).label("untracked_count"),
         )
+        .join(Announcement, AnnouncementDelivery.announcement_id == Announcement.id)
         .group_by(AnnouncementDelivery.announcement_id)
         .subquery()
     )
@@ -232,12 +295,14 @@ async def _list(
             func.coalesce(counts.c.pending_count, 0).label("pending_count"),
             func.coalesce(counts.c.failed_count, 0).label("failed_count"),
             func.coalesce(counts.c.cancelled_count, 0).label("cancelled_count"),
+            func.coalesce(counts.c.updating_count, 0).label("updating_count"),
+            func.coalesce(counts.c.untracked_count, 0).label("untracked_count"),
         )
         .outerjoin(Department, Announcement.department_id == Department.id)
         .outerjoin(User, Announcement.target_user_id == User.id)
         .outerjoin(counts, counts.c.announcement_id == Announcement.id)
         # Only this backend's bot: local and production share the database.
-        .where(Announcement.bot_id.is_not_distinct_from(settings.telegram_bot_id))
+        .where(Announcement.bot_id.is_not_distinct_from(settings.telegram_bot_id), Announcement.deleted_at.is_(None))
         .order_by(Announcement.created_at.desc())
         .limit(limit)
     )
@@ -263,6 +328,9 @@ async def _list(
             pending_count=row["pending_count"],
             failed_count=row["failed_count"],
             cancelled_count=row["cancelled_count"],
+            version=row["version"],
+            updating_count=row["updating_count"],
+            untracked_count=row["untracked_count"],
         )
         for row in rows
     ]

@@ -35,6 +35,10 @@ class AnnouncementCreate(AnnouncementAudience):
     text: str = Field(min_length=1, max_length=MAX_ANNOUNCEMENT_LENGTH)
 
 
+class AnnouncementUpdate(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_ANNOUNCEMENT_LENGTH)
+
+
 class AnnouncementPreview(BaseModel):
     recipient_count: int
 
@@ -55,6 +59,18 @@ class AnnouncementResponse(BaseModel):
     pending_count: int = 0
     failed_count: int = 0
     cancelled_count: int = 0
+    version: int = 1  # 1 = never edited
+    # Delivered copies the bot is still updating to the latest text
+    updating_count: int = 0
+    # Delivered before message ids were recorded: can't be edited or deleted in the chat
+    untracked_count: int = 0
+
+
+class DeleteResult(BaseModel):
+    # Delivered copies the bot will now remove from users' chats
+    removing_count: int
+    # Delivered copies that can't be removed (sent before message ids were recorded)
+    untracked_count: int
 
 
 class DeliveryRow(BaseModel):
@@ -80,6 +96,13 @@ class PendingDelivery(BaseModel):
     has_department: bool
     is_pro: bool
     has_dual_access: bool
+    version: int = 1  # version of the text, reported back once sent
+
+
+class SentDelivery(BaseModel):
+    delivery_id: UUID
+    message_id: int
+    version: int = 1
 
 
 class FailedDelivery(BaseModel):
@@ -88,6 +111,37 @@ class FailedDelivery(BaseModel):
 
 
 class DeliveryReport(BaseModel):
-    sent: list[UUID] = []
+    sent: list[UUID] = []  # older bots: no message id
+    sent_messages: list[SentDelivery] = []
     deferred: list[UUID] = []  # user was busy (exam, AI chat, ...) or a temporary error
     failed: list[FailedDelivery] = []  # permanent (user blocked the bot, chat not found)
+
+
+# ── Bot edit / delete queue (copies already in users' chats) ─────────────────
+
+class SyncTask(BaseModel):
+    delivery_id: UUID
+    action: Literal["edit", "delete"]
+    telegram_id: int
+    message_id: int
+    text: str | None = None  # edit only
+    version: int
+
+
+class EditedDelivery(BaseModel):
+    delivery_id: UUID
+    version: int
+
+
+class FailedSync(BaseModel):
+    delivery_id: UUID
+    action: Literal["edit", "delete"]
+    version: int
+    error: str = Field(max_length=500)
+
+
+class SyncReport(BaseModel):
+    edited: list[EditedDelivery] = []
+    deleted: list[UUID] = []
+    deferred: list[UUID] = []  # temporary error: try again later
+    failed: list[FailedSync] = []  # permanent: stop trying for this copy
